@@ -20,8 +20,9 @@ using namespace MT32Emu;
  * compile-time rename (see build.rs): the C standard's example LCG, chosen
  * because it is trivial to mirror bit for bit in Rust. Seeded afresh by
  * every open, so a synth's output depends on nothing outside it. One
- * engine at a time: the state is as global as the libc one it replaces. */
-static unsigned long long oracle_rand_state = 1;
+ * engine per thread: thread-local state keeps tests that render on
+ * parallel harness threads out of each other's streams. */
+static thread_local unsigned long long oracle_rand_state = 1;
 
 extern "C" int mt32_oracle_rand() {
     oracle_rand_state = oracle_rand_state * 1103515245 + 12345;
