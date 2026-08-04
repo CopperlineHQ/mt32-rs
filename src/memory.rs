@@ -354,6 +354,54 @@ impl Memory {
         }
     }
 
+    /// One part's sixteen patch temp bytes.
+    pub fn patch_temp(&self, part: usize) -> &[u8] {
+        &self.patch_temp[part * PATCH_TEMP..(part + 1) * PATCH_TEMP]
+    }
+
+    pub fn patch_temp_mut(&mut self, part: usize) -> &mut [u8] {
+        &mut self.patch_temp[part * PATCH_TEMP..(part + 1) * PATCH_TEMP]
+    }
+
+    /// One part's timbre temp: the whole timbre it is playing.
+    pub fn timbre_temp(&self, part: usize) -> &[u8] {
+        &self.timbre_temp[part * TIMBRE..(part + 1) * TIMBRE]
+    }
+
+    pub fn timbre_temp_mut(&mut self, part: usize) -> &mut [u8] {
+        &mut self.timbre_temp[part * TIMBRE..(part + 1) * TIMBRE]
+    }
+
+    /// One timbre out of the four banks, by absolute number.
+    pub fn bank_timbre(&self, timbre: usize) -> &[u8] {
+        &self.timbres[timbre * PADDED_TIMBRE..timbre * PADDED_TIMBRE + TIMBRE]
+    }
+
+    /// One rhythm key's four setup bytes.
+    pub fn rhythm_temp(&self, key: usize) -> &[u8] {
+        &self.rhythm_temp[key * RHYTHM_TEMP..(key + 1) * RHYTHM_TEMP]
+    }
+
+    /// The system area, master tune through master volume.
+    pub fn system(&self) -> &[u8] {
+        &self.system
+    }
+
+    /// The live bytes a partial's parameters resolve to right now, which
+    /// is how a SysEx write reaches a note already sounding.
+    pub fn partial_param(&self, source: crate::note::ParamSource) -> &[u8] {
+        match source {
+            crate::note::ParamSource::TimbreTemp { part, partial } => {
+                let timbre = self.timbre_temp(part);
+                &timbre[TIMBRE_COMMON + partial * TIMBRE_PARTIAL..][..TIMBRE_PARTIAL]
+            }
+            crate::note::ParamSource::Bank { timbre, partial } => {
+                let timbre = self.bank_timbre(timbre);
+                &timbre[TIMBRE_COMMON + partial * TIMBRE_PARTIAL..][..TIMBRE_PARTIAL]
+            }
+        }
+    }
+
     /// A read at a flat address, as an RQ1 answers: one region, clamped to
     /// its end. How many bytes were written into `out`.
     pub fn read(&mut self, addr: u32, out: &mut [u8]) -> usize {

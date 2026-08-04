@@ -23,6 +23,7 @@ pub mod layout;
 pub mod memory;
 pub mod note;
 pub mod param;
+pub mod part;
 pub mod partial;
 pub mod pcm;
 pub mod rom;
