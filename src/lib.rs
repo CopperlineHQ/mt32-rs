@@ -17,6 +17,7 @@
 //! what "sounds like an MT-32" means here.
 
 pub mod rom;
+pub mod sha1;
 
 /// The rate the module's DAC runs at, and so the rate [`rom`]-fed synthesis
 /// leaves the engine before any host resampling.

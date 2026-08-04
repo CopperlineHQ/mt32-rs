@@ -141,3 +141,56 @@ fn the_oracle_stands() {
     oracle.read_memory(0x10_0000, &mut system);
     assert_eq!(system[0], 0x4A, "master tune answers at its address");
 }
+
+extern "C" {
+    fn mt32_oracle_identify(data: *const u8, len: usize, name32: *mut c_char) -> c_int;
+}
+
+/// What the reference engine calls one image, if it is a known full ROM.
+fn oracle_identify(data: &[u8]) -> Option<String> {
+    let mut name = [0 as c_char; 32];
+    let full = unsafe { mt32_oracle_identify(data.as_ptr(), data.len(), name.as_mut_ptr()) };
+    (full != 0).then(|| {
+        let bytes: Vec<u8> = name
+            .iter()
+            .take_while(|&&b| b != 0)
+            .map(|&b| b as u8)
+            .collect();
+        String::from_utf8_lossy(&bytes).into_owned()
+    })
+}
+
+/// Identification agrees with the reference engine on every file in the
+/// ROM directory: same short name for every full image, and nothing this
+/// crate accepts that the engine does not. The directory's half- and
+/// interleaved-dump files exercise the refusals.
+#[test]
+#[ignore = "needs a ROM directory in MT32_RS_ROMS_ALL"]
+fn identification_agrees_with_the_reference_engine() {
+    let Some(dir) = std::env::var_os("MT32_RS_ROMS_ALL") else {
+        panic!("MT32_RS_ROMS_ALL is not set");
+    };
+    let mut seen = 0;
+    let mut full = 0;
+    for entry in std::fs::read_dir(dir)
+        .expect("the directory opens")
+        .flatten()
+    {
+        let Ok(data) = std::fs::read(entry.path()) else {
+            continue;
+        };
+        let theirs = oracle_identify(&data);
+        let ours = mt32_rs::rom::identify(&data).map(|r| r.short_name.to_string());
+        assert_eq!(
+            ours,
+            theirs,
+            "{} identified differently",
+            entry.file_name().to_string_lossy()
+        );
+        seen += 1;
+        full += usize::from(ours.is_some());
+    }
+    assert!(seen > 0, "no files to check");
+    assert!(full > 0, "no full ROMs among them");
+    println!("agreed on {seen} files, {full} of them full ROMs");
+}

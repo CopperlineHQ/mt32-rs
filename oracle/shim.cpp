@@ -115,4 +115,20 @@ void mt32_oracle_read_memory(void *handle, unsigned int addr, unsigned int len,
     static_cast<Oracle *>(handle)->synth->readMemory(flat, len, out);
 }
 
+/* Identify one image as the engine does: 1 if it is a known FULL ROM,
+ * with the short name copied into `name32`; 0 for anything else,
+ * including the half- and interleaved-dump forms. */
+int mt32_oracle_identify(const unsigned char *data, size_t len, char *name32) {
+    ArrayFile file(data, len);
+    const ROMImage *image = ROMImage::makeROMImage(&file);
+    const ROMInfo *info = image->getROMInfo();
+    int full = info != NULL && info->pairType == ROMInfo::Full;
+    if (full) {
+        strncpy(name32, info->shortName, 31);
+        name32[31] = 0;
+    }
+    ROMImage::freeROMImage(image);
+    return full;
+}
+
 } /* extern "C" */
