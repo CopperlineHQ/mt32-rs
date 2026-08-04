@@ -21,6 +21,7 @@ pub mod jitter;
 pub mod la32;
 pub mod layout;
 pub mod memory;
+pub mod note;
 pub mod param;
 pub mod pcm;
 pub mod rom;
