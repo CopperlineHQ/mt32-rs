@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include "File.h"
+#include "Tables.h"
 #include "ROMInfo.h"
 #include "Synth.h"
 
@@ -129,6 +130,21 @@ int mt32_oracle_identify(const unsigned char *data, size_t len, char *name32) {
     }
     ROMImage::freeROMImage(image);
     return full;
+}
+
+/* The engine's constant tables, copied out for entry-by-entry
+ * comparison: the four 8-bit curves, then the LA32's exponent and
+ * log-sine tables, then the eight decay factors, packed in that order. */
+void mt32_oracle_tables(unsigned char *curves559, unsigned short *exp512,
+                        unsigned short *logsin512, unsigned char *decay8) {
+    const Tables &t = Tables::getInstance();
+    memcpy(curves559, t.levelToAmpSubtraction, 101);
+    memcpy(curves559 + 101, t.envLogarithmicTime, 256);
+    memcpy(curves559 + 357, t.masterVolToAmpSubtraction, 101);
+    memcpy(curves559 + 458, t.pulseWidth100To255, 101);
+    memcpy(exp512, t.exp9, 512 * sizeof(unsigned short));
+    memcpy(logsin512, t.logsin9, 512 * sizeof(unsigned short));
+    memcpy(decay8, t.resAmpDecayFactors, 8);
 }
 
 } /* extern "C" */

@@ -20,6 +20,7 @@ pub mod layout;
 pub mod pcm;
 pub mod rom;
 pub mod sha1;
+pub mod tables;
 
 /// The rate the module's DAC runs at, and so the rate [`rom`]-fed synthesis
 /// leaves the engine before any host resampling.

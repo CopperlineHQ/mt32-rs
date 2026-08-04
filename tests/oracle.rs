@@ -249,3 +249,40 @@ fn the_layouts_read_the_real_images() {
     }
     assert!(checked > 0, "no control ROMs to check");
 }
+
+extern "C" {
+    fn mt32_oracle_tables(
+        curves559: *mut u8,
+        exp512: *mut u16,
+        logsin512: *mut u16,
+        decay8: *mut u8,
+    );
+}
+
+/// Every constant table matches the engine's, entry for entry. Needs no
+/// ROMs: the tables are computed, and this is the test that catches a
+/// formula mirrored at the wrong precision -- or a libm that rounds an
+/// entry differently, which is worth knowing about the moment it happens.
+#[test]
+fn the_constant_tables_match_the_reference_engine() {
+    let mut curves = [0u8; 559];
+    let mut exp9 = [0u16; 512];
+    let mut logsin9 = [0u16; 512];
+    let mut decay = [0u8; 8];
+    unsafe {
+        mt32_oracle_tables(
+            curves.as_mut_ptr(),
+            exp9.as_mut_ptr(),
+            logsin9.as_mut_ptr(),
+            decay.as_mut_ptr(),
+        )
+    };
+    let ours = mt32_rs::tables::Tables::new();
+    assert_eq!(ours.level_to_amp_subtraction[..], curves[..101]);
+    assert_eq!(ours.env_logarithmic_time[..], curves[101..357]);
+    assert_eq!(ours.master_vol_to_amp_subtraction[..], curves[357..458]);
+    assert_eq!(ours.pulse_width_100_to_255[..], curves[458..559]);
+    assert_eq!(ours.exp9, exp9);
+    assert_eq!(ours.logsin9, logsin9);
+    assert_eq!(ours.res_amp_decay_factors, decay);
+}
