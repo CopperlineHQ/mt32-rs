@@ -58,6 +58,15 @@ LGPL-2.1-or-later, as a derivative work of `mt32emu`:
   translation of; Rust port copyright its own contributors.
 - Licence texts: `LGPL21.txt`, and `GPL2.txt` which it refers to.
 
+## Related work
+
+[Moont](https://gitlab.gnome.org/geoffhill/moont) is an independent Rust
+port of Munt's CM-32L emulation, LGPL-2.1-or-later like this crate, which
+validates its output against Munt sample for sample -- proof the bar this
+project sets is reachable. It emulates the CM-32L only; this crate exists
+for the whole MT-32 family, elder quirks included, shaped for Copperline.
+Where its solutions inform this code, credit goes in `AUTHORS.txt`.
+
 ## House style
 
 Copperline is the north star: its comment voice, test naming, module shape
@@ -72,7 +81,7 @@ engine does today, with the difference that this upstream is ours.
 |---|---|---|
 | 0 | Scaffold, licences, oracle harness | done |
 | 1 | ROM identification and table extraction | done |
-| 2 | Memory model, SysEx, display strings | -- |
+| 2 | Memory model, SysEx, display strings | memory + SysEx done |
 | 3 | The sound path (LA32, envelopes, parts, reverb, analog) | -- |
 | 4 | MIDI front end and the Copperline seam | -- |
 | 5 | Copperline integration, wasm | -- |

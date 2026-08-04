@@ -368,6 +368,26 @@ impl Memory {
         }
     }
 
+    /// A patch temp write also selects: every touched part reloads its
+    /// timbre temp from the banks -- confirmed on hardware -- except the
+    /// first touched entry when the write began past the timbre-choice
+    /// bytes, and the rhythm part, which has no timbre temp.
+    fn reload_touched_timbres(&mut self, off: usize, len: usize) {
+        let first = off / PATCH_TEMP;
+        let last = (off + len - 1) / PATCH_TEMP;
+        for part in first..=last.min(8) {
+            if part == 8 || (part == first && off % PATCH_TEMP > 2) {
+                continue;
+            }
+            let at = part * PATCH_TEMP;
+            let timbre =
+                usize::from(self.patch_temp[at]) * 64 + usize::from(self.patch_temp[at + 1]);
+            let from = timbre * PADDED_TIMBRE;
+            self.timbre_temp[part * TIMBRE..(part + 1) * TIMBRE]
+                .copy_from_slice(&self.timbres[from..from + TIMBRE]);
+        }
+    }
+
     /// A device-global write at a flat address, spanning regions as the
     /// firmware lets it. What it touched, in order.
     pub fn write(&mut self, mut addr: u32, mut data: &[u8]) -> Vec<Touched> {
@@ -390,6 +410,9 @@ impl Memory {
                         if limit != 0 {
                             bytes[off + i] = byte.min(limit);
                         }
+                    }
+                    if region == Region::PatchTemp {
+                        self.reload_touched_timbres(off, take);
                     }
                     touched.push(Touched::Ram(region));
                 }

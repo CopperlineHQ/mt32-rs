@@ -364,3 +364,111 @@ fn power_on_memory_matches_the_reference_engine() {
     }
     assert!(checked > 0, "no control ROMs to check");
 }
+
+/// Both engines' readable memory, compared byte for byte; panics with the
+/// first differing byte named.
+fn assert_memory_matches(oracle: &mut Oracle, ours: &mut mt32_rs::memory::Memory, when: &str) {
+    for (name, addr, len, theirs) in oracle_regions(oracle) {
+        let mut mine = vec![0u8; len];
+        ours.read(mt32_rs::memory::flat(addr), &mut mine);
+        if mine != theirs {
+            let at = mine.iter().zip(&theirs).position(|(a, b)| a != b).unwrap();
+            panic!(
+                "{when}: {name} differs first at +0x{at:X}: ours 0x{:02X} theirs 0x{:02X}",
+                mine[at], theirs[at]
+            );
+        }
+    }
+}
+
+/// The same DT1 traffic into both engines leaves the same memory behind:
+/// plain writes, over-maximum values that clamp, a write spanning two
+/// regions, a bad checksum that must change nothing, and the 0x7F reset
+/// that puts everything back. The write path's whole behaviour, held to
+/// the reference.
+#[test]
+#[ignore = "needs a ROM pair in MT32_RS_ROMS"]
+fn sysex_writes_match_the_reference_engine() {
+    let Some((control, pcm)) = rom_pair() else {
+        panic!("MT32_RS_ROMS is not set or the pair is unreadable");
+    };
+    let info = mt32_rs::rom::identify(&control).expect("a known control ROM");
+    let layout = mt32_rs::layout::layout_for(info).expect(info.short_name);
+    let mut oracle = Oracle::open(&control, &pcm).expect("the reference engine opens");
+    let mut ours = mt32_rs::memory::Memory::power_on(&control, layout).expect(info.short_name);
+
+    let timbre: Vec<u8> = (0..246u32).map(|i| (i % 101) as u8).collect();
+    let steps: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "reverb settings",
+            mt32_rs::sysex::dt1(0x10_0001, &[1, 4, 5]),
+        ),
+        (
+            "master volume clamps",
+            mt32_rs::sysex::dt1(0x10_0016, &[0x7F]),
+        ),
+        (
+            "a part's patch temp",
+            mt32_rs::sysex::dt1(0x03_0010, &[1, 5, 30, 60, 10, 2, 0]),
+        ),
+        (
+            "part levels and pans",
+            mt32_rs::sysex::dt1(0x03_0018, &[90, 3]),
+        ),
+        (
+            "spanning patch temp into rhythm temp",
+            mt32_rs::sysex::dt1(0x03_0108, &[7, 7, 7, 7, 7, 7, 7, 7, 40, 50, 7, 1]),
+        ),
+        (
+            "a rhythm key",
+            mt32_rs::sysex::dt1(0x03_0112, &[60, 80, 7, 1]),
+        ),
+        ("a memory timbre", mt32_rs::sysex::dt1(0x08_0A00, &timbre)),
+        (
+            "a patch",
+            mt32_rs::sysex::dt1(0x05_0000, &[2, 5, 20, 40, 8, 1, 0, 0]),
+        ),
+        (
+            "timbre temp",
+            mt32_rs::sysex::dt1(0x04_0000, &timbre[..100]),
+        ),
+        (
+            "system channel assignment",
+            mt32_rs::sysex::dt1(0x10_000D, &[2, 3, 4, 5, 6, 7, 8, 9, 0]),
+        ),
+    ];
+    for (what, message) in &steps {
+        unsafe { mt32_oracle_play_sysex(oracle.0, message.as_ptr(), message.len() as c_uint) };
+        let outcome = mt32_rs::sysex::play(&mut ours, message);
+        assert!(
+            matches!(outcome, mt32_rs::sysex::Outcome::Written(_)),
+            "{what}: {outcome:?}"
+        );
+        assert_memory_matches(&mut oracle, &mut ours, what);
+    }
+
+    // One wrong byte: both engines must leave everything exactly alone.
+    let mut bad = mt32_rs::sysex::dt1(0x10_0001, &[3]);
+    let at = bad.len() - 2;
+    bad[at] ^= 1;
+    unsafe { mt32_oracle_play_sysex(oracle.0, bad.as_ptr(), bad.len() as c_uint) };
+    assert_eq!(
+        mt32_rs::sysex::play(&mut ours, &bad),
+        mt32_rs::sysex::Outcome::ChecksumError
+    );
+    assert_memory_matches(&mut oracle, &mut ours, "after a bad checksum");
+
+    // The reset address puts both back to power-on.
+    let reset = mt32_rs::sysex::dt1(0x7F_0000, &[]);
+    unsafe { mt32_oracle_play_sysex(oracle.0, reset.as_ptr(), reset.len() as c_uint) };
+    assert_eq!(
+        mt32_rs::sysex::play(&mut ours, &reset),
+        mt32_rs::sysex::Outcome::Reset
+    );
+    ours = mt32_rs::memory::Memory::power_on(&control, layout).expect(info.short_name);
+    assert_memory_matches(&mut oracle, &mut ours, "after the reset");
+    println!(
+        "  {} sysex steps, memory identical throughout",
+        steps.len() + 2
+    );
+}

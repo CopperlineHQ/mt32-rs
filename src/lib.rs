@@ -21,6 +21,7 @@ pub mod memory;
 pub mod pcm;
 pub mod rom;
 pub mod sha1;
+pub mod sysex;
 pub mod tables;
 
 /// The rate the module's DAC runs at, and so the rate [`rom`]-fed synthesis
