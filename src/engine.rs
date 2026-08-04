@@ -11,10 +11,11 @@
 //! consumed in the same order -- through the NICE DAC transform and the
 //! digital-only analog combine.
 //!
-//! Reverb is not yet modelled: the wet stream renders silent, which is
-//! exact while every sounding partial has its reverb switched off. The
-//! full-note differential runs in exactly that state; the reverb model
-//! joins later and slots into the same seam.
+//! The wet stream runs through the Boss reverb chip, selected and
+//! re-aimed by the system area's reverb bytes exactly as the firmware
+//! does it: a mode change powers a fresh chip, a time or level change
+//! re-aims the running one, and zero time with zero level switches the
+//! chip out.
 
 use crate::display::Display;
 use crate::jitter::Jitter;
@@ -26,6 +27,7 @@ use crate::param::{PartialParam, PatchTemp, RhythmTemp};
 use crate::part::{Part, PART_COUNT, RHYTHM_PART};
 use crate::partial::{LiveValues, NiceOptions, Partial, StartArgs};
 use crate::pcm::Wave;
+use crate::reverb::Reverb;
 use crate::rom;
 use crate::sysex;
 use crate::tables::Tables;
@@ -59,6 +61,11 @@ pub struct Engine {
     reserved: [u32; PART_COUNT],
     /// Which part each MIDI channel drives, 0xFF ending the list.
     chantable: [[u8; PART_COUNT]; 16],
+    reverb: Option<Reverb>,
+    /// The reference holds everything still until a short message has
+    /// actually reached a part; the gate is observable through the
+    /// reverb store it leaves frozen.
+    activated: bool,
     aborting_poly: Option<usize>,
     aborting_part_ix: usize,
     rendered_sample_count: u32,
@@ -102,21 +109,25 @@ impl Engine {
             free_polys: (0..PARTIAL_COUNT).rev().collect(),
             reserved: [0; PART_COUNT],
             chantable: [[0xFF; PART_COUNT]; 16],
+            reverb: None,
+            activated: false,
             aborting_poly: None,
             aborting_part_ix: 0,
             rendered_sample_count: 0,
             nice: NiceOptions::default(),
-            // Unity gains in the eight-bit fixed point.
+            // Unity synth gain in the eight-bit fixed point. The wet
+            // gain carries the CM-32L low-pass compensation factor on
+            // every model, the MT-32 flavours included: the reference
+            // asks its reverb-compatibility question before it counts
+            // itself as opened, so the answer is always no. Mirrored
+            // for bit-identity.
             synth_gain: 256,
-            reverb_gain: if layout.quirks.default_reverb_mt32_compatible {
-                256
-            } else {
-                (0.68 * 256.0) as i32
-            },
+            reverb_gain: (0.68 * 256.0) as i32,
             master_tune_pitch_delta: 0,
         };
         engine.refresh_reserve();
         engine.refresh_chan_assign(0, 8, false);
+        engine.refresh_reverb();
         for part in 0..PART_COUNT {
             if part == RHYTHM_PART {
                 let count = usize::from(engine.layout.rhythm_settings_count);
@@ -216,6 +227,7 @@ impl Engine {
     }
 
     fn play_unpacked(&mut self, part: usize, command: u8, data1: u8, data2: u8) {
+        self.activated = true;
         match command {
             0x8 => self.note_off(part, u32::from(data1)),
             0x9 => {
@@ -320,7 +332,11 @@ impl Engine {
 
     fn apply_touch(&mut self, touch: Touched) {
         match touch {
-            Touched::Ram(region) => self.refresh_after_write(region),
+            Touched::Ram {
+                region,
+                offset,
+                len,
+            } => self.refresh_after_write(region, offset, len),
             Touched::Display { offset, data } => {
                 let len = data.len().min(crate::display::LCD_TEXT_SIZE);
                 self.display.custom_message(&data[..len], offset);
@@ -329,18 +345,33 @@ impl Engine {
         }
     }
 
-    /// The refreshes a region write runs. Coarser than the firmware's
-    /// offset-window checks -- a write refreshes its whole region's
-    /// dependents -- which over-refreshes but never under-refreshes.
-    fn refresh_after_write(&mut self, region: crate::memory::Region) {
+    /// The refreshes a region write runs. The system area follows the
+    /// firmware's offset windows exactly -- rebuilding the channel table
+    /// silences the touched parts, so it must not run for a write that
+    /// never reached those bytes. The other regions refresh coarsely,
+    /// which over-refreshes but is idempotent.
+    fn refresh_after_write(&mut self, region: crate::memory::Region, offset: usize, len: usize) {
         use crate::memory::Region;
         match region {
             Region::System => {
-                let tune = self.memory.system()[0];
-                self.master_tune_pitch_delta = ((i32::from(tune) - 64) * 171) >> 6;
-                self.refresh_reserve();
-                self.refresh_chan_assign(0, 8, true);
-                self.display.master_volume_changed();
+                if offset == 0 {
+                    let tune = self.memory.system()[0];
+                    self.master_tune_pitch_delta = ((i32::from(tune) - 64) * 171) >> 6;
+                }
+                if offset <= 3 && offset + len > 1 {
+                    self.refresh_reverb();
+                }
+                if offset <= 12 && offset + len > 4 {
+                    self.refresh_reserve();
+                }
+                if offset <= 21 && offset + len > 13 {
+                    let first = offset.saturating_sub(13);
+                    let last = (offset + len - 13).min(8);
+                    self.refresh_chan_assign(first, last, true);
+                }
+                if offset <= 22 && offset + len > 22 {
+                    self.display.master_volume_changed();
+                }
             }
             Region::PatchTemp => {
                 for part in 0..PART_COUNT {
@@ -372,15 +403,16 @@ impl Engine {
         }
     }
 
-    /// The 0x7F reset: everything silent, memory back to power-on, the
-    /// books and the display fresh.
+    /// The 0x7F reset: every voice dies on the spot, memory goes back to
+    /// power-on and the books follow. The display keeps running, and so
+    /// does the reverb chip -- unless the mode byte comes back different,
+    /// its tail rings straight through the reset.
     pub fn reset(&mut self) {
         for id in 0..PARTIAL_COUNT {
             self.deactivate_partial(id);
         }
         self.memory =
             Memory::power_on(&self.control, &self.layout).expect("the image opened once already");
-        self.display = Display::power_on(&self.control, &self.layout);
         self.parts = (0..PART_COUNT).map(Part::new).collect();
         self.polys = (0..PARTIAL_COUNT).map(|_| Poly::new()).collect();
         self.free_polys = (0..PARTIAL_COUNT).rev().collect();
@@ -389,6 +421,7 @@ impl Engine {
         self.master_tune_pitch_delta = 0;
         self.refresh_reserve();
         self.refresh_chan_assign(0, 8, false);
+        self.refresh_reverb();
         for part in 0..PART_COUNT {
             if part == RHYTHM_PART {
                 let count = usize::from(self.layout.rhythm_settings_count);
@@ -397,6 +430,9 @@ impl Engine {
                 self.parts[part].refresh(&self.memory);
             }
         }
+        // The reference re-evaluates its gate here: only a ringing
+        // reverb store keeps the machinery running.
+        self.activated = self.reverb.as_ref().is_some_and(Reverb::is_active);
     }
 
     // ------------------------------------------------------------------
@@ -906,8 +942,36 @@ impl Engine {
         }
     }
 
+    /// The system area's reverb bytes applied: the mode selects a chip
+    /// (a change powers a fresh one), time and level re-aim the running
+    /// chip, and zero time with zero level switches it out entirely.
+    fn refresh_reverb(&mut self) {
+        let system = self.memory.system();
+        let (mode, time, level) = (system[1], system[2], system[3]);
+        if time == 0 && level == 0 {
+            self.reverb = None;
+            return;
+        }
+        if self.reverb.as_ref().map(Reverb::mode) != Some(mode) {
+            self.reverb = Some(Reverb::new(
+                mode,
+                self.quirks.default_reverb_mt32_compatible,
+            ));
+        }
+        if let Some(reverb) = self.reverb.as_mut() {
+            reverb.set_parameters(time, level);
+        }
+    }
+
     /// Render interleaved stereo, as the module's DAC hears it.
     pub fn render(&mut self, stream: &mut [(i16, i16)]) {
+        if !self.activated {
+            stream.fill((0, 0));
+            self.rendered_sample_count =
+                self.rendered_sample_count.wrapping_add(stream.len() as u32);
+            self.display.refresh(self.rendered_sample_count);
+            return;
+        }
         let mut done = 0;
         while done < stream.len() {
             let remaining = stream.len() - done;
@@ -954,10 +1018,13 @@ impl Engine {
         for sample in non_reverb_l.iter_mut().chain(non_reverb_r.iter_mut()) {
             *sample = nice_dac(*sample);
         }
-        // Reverb renders silent until the model joins; exact while every
-        // sounding partial keeps its reverb switch off.
-        let wet_l = vec![0i16; len];
-        let wet_r = vec![0i16; len];
+        // The wet pair comes off the reverb chip, fed the DAC-shaped dry
+        // streams; with no chip selected it stays silent.
+        let mut wet_l = vec![0i16; len];
+        let mut wet_r = vec![0i16; len];
+        if let Some(reverb) = self.reverb.as_mut() {
+            reverb.process(&dry_l, &dry_r, &mut wet_l, &mut wet_r);
+        }
 
         for n in 0..len {
             let in_l = (i32::from(non_reverb_l[n]) + i32::from(dry_l[n])) * self.synth_gain

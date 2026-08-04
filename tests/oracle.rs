@@ -530,7 +530,11 @@ fn the_display_matches_the_reference_engine() {
                                 let len = data.len().min(mt32_rs::display::LCD_TEXT_SIZE);
                                 display.custom_message(&data[..len], offset);
                             }
-                            mt32_rs::memory::Touched::Ram(mt32_rs::memory::Region::System) => {
+                            mt32_rs::memory::Touched::Ram {
+                                region: mt32_rs::memory::Region::System,
+                                offset,
+                                len,
+                            } if offset <= 22 && offset + len > 22 => {
                                 display.master_volume_changed();
                             }
                             _ => {}
@@ -884,12 +888,11 @@ fn assert_frames_match(
 }
 
 /// The full sound path against the reference: both engines opened on the
-/// same pair, the same reverb-off DT1 (the wet stream is then silent on
-/// both sides -- the one seam the port has not yet filled), the same note
-/// held, bent and released, every output frame compared. This is the bar
-/// the whole sound path aims at: the LA32 pair, the ramps, all three
-/// envelopes, the jitter stream, voice allocation and the analog combine
-/// have to agree at once for a single frame to match.
+/// same pair, the same reverb-off DT1 putting the whole weight on the dry
+/// path, the same note held, bent and released, every output frame
+/// compared. This is the bar the sound path aims at: the LA32 pair, the
+/// ramps, all three envelopes, the jitter stream, voice allocation and
+/// the analog combine have to agree at once for a single frame to match.
 #[test]
 #[ignore = "needs a ROM pair in MT32_RS_ROMS"]
 fn a_whole_note_matches_the_reference_engine() {
@@ -938,9 +941,11 @@ fn a_whole_note_matches_the_reference_engine() {
 }
 
 /// The same note through every control ROM in the directory, each on its
-/// own family's PCM ROM: both MT-32 generations and the CM-32L line. The
-/// elder paths -- the slower envelope timer, the generation's key
-/// handling, the older voice books -- all sit under this one.
+/// own family's PCM ROM: both MT-32 generations and the CM-32L line, with
+/// each firmware's own reverb ringing. The elder paths -- the slower
+/// envelope timer, the generation's key handling, the older voice books,
+/// the two reverb flavours and their different wet gains -- all sit under
+/// this one.
 #[test]
 #[ignore = "needs a ROM directory in MT32_RS_ROMS_ALL"]
 fn a_note_matches_on_every_rom() {
@@ -981,9 +986,6 @@ fn a_note_matches_on_every_rom() {
         let mut at = 0usize;
         let quiet = format!("{}: power-on quiet", info.short_name);
         assert_frames_match(&mut oracle, &mut ours, rate / 4, &mut at, &quiet);
-        let dry = mt32_rs::sysex::dt1(0x03_0006, &[0]);
-        oracle.play_sysex(&dry);
-        ours.play_sysex(&dry);
         oracle.play_msg(0x007F_3C91);
         ours.play_msg(0x007F_3C91);
         let held = format!("{}: the note held", info.short_name);
@@ -1122,4 +1124,260 @@ fn a_crowded_scene_matches_the_reference_engine() {
 
     assert_eq!(ours.rendered_sample_count(), at as u32);
     println!("  {at} frames identical through the crowd");
+}
+
+extern "C" {
+    fn mt32_oracle_reverb_new(mode: c_int, mt32_compatible: c_int) -> *mut std::ffi::c_void;
+    fn mt32_oracle_reverb_free(model: *mut std::ffi::c_void);
+    fn mt32_oracle_reverb_set(model: *mut std::ffi::c_void, time: u8, level: u8);
+    fn mt32_oracle_reverb_process(
+        model: *mut std::ffi::c_void,
+        in_l: *const i16,
+        in_r: *const i16,
+        out_l: *mut i16,
+        out_r: *mut i16,
+        frames: c_uint,
+    );
+    fn mt32_oracle_reverb_active(model: *const std::ffi::c_void) -> c_int;
+}
+
+/// The Boss reverb against the reference: both chip flavours, all four
+/// programs, the whole time-and-level grid under full-range deterministic
+/// noise; then a deep ring per program that wraps the longest store,
+/// re-aims the running parameters mid-flight and drains to quiet with the
+/// activity flag agreeing throughout. Needs no ROMs: the tables are
+/// traced constants both engines carry.
+#[test]
+fn the_reverb_chip_matches_the_reference_engine() {
+    let noise = |seed: u32, n: usize| -> Vec<i16> {
+        (0..n)
+            .map(|i| ((i as u32).wrapping_add(seed).wrapping_mul(2654435761) >> 16) as i16)
+            .collect()
+    };
+    let mut compared = 0u64;
+    let mut run = |theirs: *mut std::ffi::c_void,
+                   ours: &mut mt32_rs::reverb::Reverb,
+                   in_l: &[i16],
+                   in_r: &[i16],
+                   what: &str| {
+        let n = in_l.len();
+        let mut their_l = vec![0i16; n];
+        let mut their_r = vec![0i16; n];
+        unsafe {
+            mt32_oracle_reverb_process(
+                theirs,
+                in_l.as_ptr(),
+                in_r.as_ptr(),
+                their_l.as_mut_ptr(),
+                their_r.as_mut_ptr(),
+                n as c_uint,
+            )
+        };
+        let mut our_l = vec![0i16; n];
+        let mut our_r = vec![0i16; n];
+        ours.process(in_l, in_r, &mut our_l, &mut our_r);
+        for i in 0..n {
+            assert_eq!(
+                (our_l[i], our_r[i]),
+                (their_l[i], their_r[i]),
+                "{what}, sample {i}"
+            );
+        }
+        compared += 2 * n as u64;
+    };
+
+    for mt32 in [false, true] {
+        let flavour = if mt32 { "mt32" } else { "cm32l" };
+        for mode in 0..4u8 {
+            for time in 0..8u8 {
+                for level in 0..8u8 {
+                    let theirs = unsafe { mt32_oracle_reverb_new(i32::from(mode), mt32 as c_int) };
+                    let mut ours = mt32_rs::reverb::Reverb::new(mode, mt32);
+                    unsafe { mt32_oracle_reverb_set(theirs, time, level) };
+                    ours.set_parameters(time, level);
+                    run(
+                        theirs,
+                        &mut ours,
+                        &noise(11, 1024),
+                        &noise(47, 1024),
+                        &format!("{flavour} mode {mode} time {time} level {level}"),
+                    );
+                    unsafe { mt32_oracle_reverb_free(theirs) };
+                }
+            }
+
+            // The deep ring: wrap even the tap delay's store, change the
+            // running time and level without a reset, drain to quiet.
+            let theirs = unsafe { mt32_oracle_reverb_new(i32::from(mode), mt32 as c_int) };
+            let mut ours = mt32_rs::reverb::Reverb::new(mode, mt32);
+            unsafe { mt32_oracle_reverb_set(theirs, 5, 3) };
+            ours.set_parameters(5, 3);
+            run(
+                theirs,
+                &mut ours,
+                &noise(3, 40_000),
+                &noise(7, 40_000),
+                &format!("{flavour} mode {mode} deep ring"),
+            );
+            unsafe { mt32_oracle_reverb_set(theirs, 2, 6) };
+            ours.set_parameters(2, 6);
+            run(
+                theirs,
+                &mut ours,
+                &noise(23, 8_000),
+                &noise(31, 8_000),
+                &format!("{flavour} mode {mode} re-aimed mid-ring"),
+            );
+            let quiet = vec![0i16; 8_000];
+            let mut drained = false;
+            for block in 0..40 {
+                run(
+                    theirs,
+                    &mut ours,
+                    &quiet,
+                    &quiet,
+                    &format!("{flavour} mode {mode} drain block {block}"),
+                );
+                let their_active = unsafe { mt32_oracle_reverb_active(theirs) } != 0;
+                assert_eq!(
+                    ours.is_active(),
+                    their_active,
+                    "{flavour} mode {mode} activity after drain block {block}"
+                );
+                if !their_active {
+                    drained = true;
+                    break;
+                }
+            }
+            assert!(drained, "{flavour} mode {mode} never drained to quiet");
+            unsafe { mt32_oracle_reverb_free(theirs) };
+        }
+    }
+    println!("  {compared} wet samples identical");
+}
+
+/// A reverberant scene against the reference: the chip selected at power
+/// on rings a note's tail past the voice's death, time and level re-aim
+/// the running chip without a reset, a mode change powers a fresh chip
+/// mid-note, zero time and level switch the chip out and back -- and the
+/// 0x7F reset, which kills every voice on the spot, leaves the same
+/// mode's tail ringing straight through, exactly as the firmware does.
+#[test]
+#[ignore = "needs a ROM pair in MT32_RS_ROMS"]
+fn a_reverberant_scene_matches_the_reference_engine() {
+    let Some((control, pcm)) = rom_pair() else {
+        panic!("MT32_RS_ROMS is not set or the pair is unreadable");
+    };
+    let mut oracle = Oracle::open(&control, &pcm).expect("the reference engine opens");
+    let mut ours = mt32_rs::engine::Engine::open(&control, &pcm).expect("the engine opens");
+    let rate = mt32_rs::SAMPLE_RATE as usize;
+    let mut at = 0usize;
+    let play = |oracle: &mut Oracle, ours: &mut mt32_rs::engine::Engine, msg: u32| {
+        oracle.play_msg(msg);
+        ours.play_msg(msg);
+    };
+    let write =
+        |oracle: &mut Oracle, ours: &mut mt32_rs::engine::Engine, addr: u32, data: &[u8]| {
+            let msg = mt32_rs::sysex::dt1(addr, data);
+            oracle.play_sysex(&msg);
+            ours.play_sysex(&msg);
+        };
+
+    // Middle C into the power-on room; the tail rings past the voice.
+    play(&mut oracle, &mut ours, 0x007F_3C91);
+    assert_frames_match(
+        &mut oracle,
+        &mut ours,
+        rate,
+        &mut at,
+        "the note in the room",
+    );
+    play(&mut oracle, &mut ours, 0x0000_3C81);
+    assert_frames_match(
+        &mut oracle,
+        &mut ours,
+        rate,
+        &mut at,
+        "the tail past the voice",
+    );
+
+    // Re-aim the running chip -- a longer time, then the top level. No
+    // reset: the ring carries straight on.
+    write(&mut oracle, &mut ours, 0x10_0002, &[7]);
+    assert_frames_match(
+        &mut oracle,
+        &mut ours,
+        rate / 4,
+        &mut at,
+        "time re-aimed mid-ring",
+    );
+    write(&mut oracle, &mut ours, 0x10_0003, &[7]);
+    assert_frames_match(
+        &mut oracle,
+        &mut ours,
+        rate / 4,
+        &mut at,
+        "level re-aimed mid-ring",
+    );
+
+    // A fresh note, and a mode change under it: a fresh chip mid-note.
+    play(&mut oracle, &mut ours, 0x0060_4091);
+    assert_frames_match(
+        &mut oracle,
+        &mut ours,
+        rate / 2,
+        &mut at,
+        "a note into the re-aimed room",
+    );
+    write(&mut oracle, &mut ours, 0x10_0001, &[2, 3, 5]);
+    assert_frames_match(
+        &mut oracle,
+        &mut ours,
+        rate / 2,
+        &mut at,
+        "a fresh chip mid-note",
+    );
+    play(&mut oracle, &mut ours, 0x0000_4081);
+
+    // The chip out -- the wet dies on the instant -- and back, fresh.
+    write(&mut oracle, &mut ours, 0x10_0002, &[0, 0]);
+    assert_frames_match(
+        &mut oracle,
+        &mut ours,
+        rate / 4,
+        &mut at,
+        "the chip switched out",
+    );
+    write(&mut oracle, &mut ours, 0x10_0002, &[5, 3]);
+    assert_frames_match(
+        &mut oracle,
+        &mut ours,
+        rate / 4,
+        &mut at,
+        "the chip switched back",
+    );
+
+    // Back to the power-on mode, a chord ringing, and the 0x7F reset.
+    write(&mut oracle, &mut ours, 0x10_0001, &[0]);
+    for note in [0x3Cu32, 0x40, 0x43] {
+        play(&mut oracle, &mut ours, 0x0070_0091 | (note << 8));
+    }
+    assert_frames_match(
+        &mut oracle,
+        &mut ours,
+        rate / 2,
+        &mut at,
+        "a chord before the reset",
+    );
+    write(&mut oracle, &mut ours, 0x7F_0000, &[]);
+    assert_frames_match(
+        &mut oracle,
+        &mut ours,
+        rate,
+        &mut at,
+        "the tail through the reset",
+    );
+
+    assert_eq!(ours.rendered_sample_count(), at as u32);
+    println!("  {at} frames identical through the rooms");
 }

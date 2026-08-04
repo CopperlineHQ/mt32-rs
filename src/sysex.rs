@@ -169,7 +169,11 @@ mod tests {
         let outcome = play(&mut memory, &message);
         assert_eq!(
             outcome,
-            Outcome::Written(vec![Touched::Ram(Region::System)])
+            Outcome::Written(vec![Touched::Ram {
+                region: Region::System,
+                offset: 1,
+                len: 1,
+            }])
         );
         let mut back = [0u8; 2];
         memory.read(flat(0x10_0000), &mut back);

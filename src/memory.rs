@@ -132,7 +132,14 @@ impl Region {
 /// what was sent to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Touched {
-    Ram(Region),
+    /// A write landed in a backed region: which one, and the byte
+    /// window it covered, region-relative -- the refreshes it triggers
+    /// are windowed the same way the firmware's are.
+    Ram {
+        region: Region,
+        offset: usize,
+        len: usize,
+    },
     /// A write into the display window: where in it, and what arrived.
     Display {
         offset: u32,
@@ -475,7 +482,11 @@ impl Memory {
                     if region == Region::PatchTemp {
                         self.reload_touched_timbres(off, take);
                     }
-                    touched.push(Touched::Ram(region));
+                    touched.push(Touched::Ram {
+                        region,
+                        offset: off,
+                        len: take,
+                    });
                 }
                 None if region == Region::Display => {
                     touched.push(Touched::Display {
