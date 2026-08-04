@@ -286,3 +286,81 @@ fn the_constant_tables_match_the_reference_engine() {
     assert_eq!(ours.logsin9, logsin9);
     assert_eq!(ours.res_amp_decay_factors, decay);
 }
+
+/// The readable regions, drained from an engine via its own RQ1 path.
+fn oracle_regions(oracle: &mut Oracle) -> Vec<(&'static str, u32, usize, Vec<u8>)> {
+    [
+        ("patch temp", 0x03_0000, 9 * 16),
+        ("rhythm temp", 0x03_0110, 85 * 4),
+        ("timbre temp", 0x04_0000, 8 * 246),
+        ("patches", 0x05_0000, 128 * 8),
+        ("memory timbres", 0x08_0000, 64 * 256),
+        ("system", 0x10_0000, 23),
+    ]
+    .into_iter()
+    .map(|(name, addr, len)| {
+        let mut bytes = vec![0u8; len];
+        oracle.read_memory(addr, &mut bytes);
+        (name, addr, len, bytes)
+    })
+    .collect()
+}
+
+/// Power-on memory matches the reference engine byte for byte, for every
+/// control ROM in the directory: the timbre banks through their clamped
+/// loads and compressed expansion, the part programs, the rhythm setup,
+/// and the system defaults. The strongest whole-layer check before any
+/// sound exists to compare.
+#[test]
+#[ignore = "needs a ROM directory in MT32_RS_ROMS_ALL"]
+fn power_on_memory_matches_the_reference_engine() {
+    let Some(dir) = std::env::var_os("MT32_RS_ROMS_ALL") else {
+        panic!("MT32_RS_ROMS_ALL is not set");
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let mut images = Vec::new();
+    for entry in std::fs::read_dir(&dir)
+        .expect("the directory opens")
+        .flatten()
+    {
+        if let Ok(data) = std::fs::read(entry.path()) {
+            if let Some(info) = mt32_rs::rom::identify(&data) {
+                images.push((info, data));
+            }
+        }
+    }
+    let pcm_for = |family: mt32_rs::rom::Family| {
+        let want = if family == mt32_rs::rom::Family::Cm32l {
+            "pcm_cm32l"
+        } else {
+            "pcm_mt32"
+        };
+        images
+            .iter()
+            .find(|(info, _)| info.short_name == want)
+            .map(|(_, data)| data.clone())
+            .expect(want)
+    };
+    let mut checked = 0;
+    for (info, control) in &images {
+        let Some(family) = info.family else { continue };
+        let layout = mt32_rs::layout::layout_for(info).expect(info.short_name);
+        let mut oracle = Oracle::open(control, &pcm_for(family)).expect(info.short_name);
+        let mut ours = mt32_rs::memory::Memory::power_on(control, layout).expect(info.short_name);
+        for (name, addr, len, theirs) in oracle_regions(&mut oracle) {
+            let mut mine = vec![0u8; len];
+            let got = ours.read(mt32_rs::memory::flat(addr), &mut mine);
+            assert_eq!(got, len, "{}: {name} short read", info.short_name);
+            if mine != theirs {
+                let at = mine.iter().zip(&theirs).position(|(a, b)| a != b).unwrap();
+                panic!(
+                    "{}: {name} differs first at +0x{at:X}: ours 0x{:02X} theirs 0x{:02X}",
+                    info.short_name, mine[at], theirs[at]
+                );
+            }
+        }
+        checked += 1;
+        println!("  {:<18} power-on memory identical", info.short_name);
+    }
+    assert!(checked > 0, "no control ROMs to check");
+}
