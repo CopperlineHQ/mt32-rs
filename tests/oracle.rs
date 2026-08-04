@@ -852,6 +852,37 @@ fn the_wave_generator_matches_the_reference_engine() {
     println!("  {compared} pair samples identical");
 }
 
+/// Render the same frame count through both engines in uneven chunks --
+/// crossing the render loop's internal boundaries -- and panic at the
+/// first differing frame, named by the running position.
+fn assert_frames_match(
+    oracle: &mut Oracle,
+    ours: &mut mt32_rs::engine::Engine,
+    frames: usize,
+    at: &mut usize,
+    when: &str,
+) {
+    let mut sizes = [1usize, 7, 100, 977, 4096, 6000].into_iter().cycle();
+    let mut left = frames;
+    while left > 0 {
+        let chunk = sizes.next().unwrap().min(left);
+        let theirs = oracle.render(chunk);
+        let mut mine = vec![(0i16, 0i16); chunk];
+        ours.render(&mut mine);
+        if mine != theirs {
+            let i = mine.iter().zip(&theirs).position(|(a, b)| a != b).unwrap();
+            panic!(
+                "{when}: frames diverge at {} (ours {:?}, theirs {:?})",
+                *at + i,
+                mine[i],
+                theirs[i]
+            );
+        }
+        *at += chunk;
+        left -= chunk;
+    }
+}
+
 /// The full sound path against the reference: both engines opened on the
 /// same pair, the same reverb-off DT1 (the wet stream is then silent on
 /// both sides -- the one seam the port has not yet filled), the same note
@@ -870,33 +901,10 @@ fn a_whole_note_matches_the_reference_engine() {
 
     let rate = mt32_rs::SAMPLE_RATE as usize;
     let mut at = 0usize;
-    let mut compare =
-        |oracle: &mut Oracle, ours: &mut mt32_rs::engine::Engine, frames: usize, when: &str| {
-            // Uneven chunks cross the render loop's internal boundaries.
-            let mut sizes = [1usize, 7, 100, 977, 4096, 6000].into_iter().cycle();
-            let mut left = frames;
-            while left > 0 {
-                let chunk = sizes.next().unwrap().min(left);
-                let theirs = oracle.render(chunk);
-                let mut mine = vec![(0i16, 0i16); chunk];
-                ours.render(&mut mine);
-                if mine != theirs {
-                    let i = mine.iter().zip(&theirs).position(|(a, b)| a != b).unwrap();
-                    panic!(
-                        "{when}: frames diverge at {} (ours {:?}, theirs {:?})",
-                        at + i,
-                        mine[i],
-                        theirs[i]
-                    );
-                }
-                at += chunk;
-                left -= chunk;
-            }
-        };
 
     // A quarter second of power-on quiet: the render machinery agrees
     // before any voice sounds.
-    compare(&mut oracle, &mut ours, rate / 4, "power-on quiet");
+    assert_frames_match(&mut oracle, &mut ours, rate / 4, &mut at, "power-on quiet");
 
     // Part 1's reverb off. No partial feeds the reference's reverb, so
     // its wet stream is silence too and the engines are on equal terms.
@@ -907,18 +915,211 @@ fn a_whole_note_matches_the_reference_engine() {
     // Middle C, full velocity, channel 1: part 1's piano, held.
     oracle.play_msg(0x007F_3C91);
     ours.play_msg(0x007F_3C91);
-    compare(&mut oracle, &mut ours, 2 * rate, "the note held");
+    assert_frames_match(&mut oracle, &mut ours, 2 * rate, &mut at, "the note held");
 
     // Bend it up a little: the pitch envelope re-aims in flight.
     oracle.play_msg(0x0060_00E1);
     ours.play_msg(0x0060_00E1);
-    compare(&mut oracle, &mut ours, rate / 2, "the note bent");
+    assert_frames_match(&mut oracle, &mut ours, rate / 2, &mut at, "the note bent");
 
     // Off, and the release tail out to nothing.
     oracle.play_msg(0x0000_3C81);
     ours.play_msg(0x0000_3C81);
-    compare(&mut oracle, &mut ours, 2 * rate, "the release tail");
+    assert_frames_match(
+        &mut oracle,
+        &mut ours,
+        2 * rate,
+        &mut at,
+        "the release tail",
+    );
 
     assert_eq!(ours.rendered_sample_count(), at as u32);
     println!("  {at} frames identical through hold, bend and release");
+}
+
+/// The same note through every control ROM in the directory, each on its
+/// own family's PCM ROM: both MT-32 generations and the CM-32L line. The
+/// elder paths -- the slower envelope timer, the generation's key
+/// handling, the older voice books -- all sit under this one.
+#[test]
+#[ignore = "needs a ROM directory in MT32_RS_ROMS_ALL"]
+fn a_note_matches_on_every_rom() {
+    let Some(dir) = std::env::var_os("MT32_RS_ROMS_ALL") else {
+        panic!("MT32_RS_ROMS_ALL is not set");
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let mut images = Vec::new();
+    for entry in std::fs::read_dir(&dir)
+        .expect("the directory opens")
+        .flatten()
+    {
+        if let Ok(data) = std::fs::read(entry.path()) {
+            if let Some(info) = mt32_rs::rom::identify(&data) {
+                images.push((info, data));
+            }
+        }
+    }
+    let pcm_for = |family: mt32_rs::rom::Family| {
+        let want = if family == mt32_rs::rom::Family::Cm32l {
+            "pcm_cm32l"
+        } else {
+            "pcm_mt32"
+        };
+        images
+            .iter()
+            .find(|(info, _)| info.short_name == want)
+            .map(|(_, data)| data.clone())
+            .expect(want)
+    };
+    let mut checked = 0;
+    for (info, control) in &images {
+        let Some(family) = info.family else { continue };
+        let pcm = pcm_for(family);
+        let mut oracle = Oracle::open(control, &pcm).expect(info.short_name);
+        let mut ours = mt32_rs::engine::Engine::open(control, &pcm).expect(info.short_name);
+        let rate = mt32_rs::SAMPLE_RATE as usize;
+        let mut at = 0usize;
+        let quiet = format!("{}: power-on quiet", info.short_name);
+        assert_frames_match(&mut oracle, &mut ours, rate / 4, &mut at, &quiet);
+        let dry = mt32_rs::sysex::dt1(0x03_0006, &[0]);
+        oracle.play_sysex(&dry);
+        ours.play_sysex(&dry);
+        oracle.play_msg(0x007F_3C91);
+        ours.play_msg(0x007F_3C91);
+        let held = format!("{}: the note held", info.short_name);
+        assert_frames_match(&mut oracle, &mut ours, rate, &mut at, &held);
+        oracle.play_msg(0x0000_3C81);
+        ours.play_msg(0x0000_3C81);
+        let tail = format!("{}: the release tail", info.short_name);
+        assert_frames_match(&mut oracle, &mut ours, rate, &mut at, &tail);
+        checked += 1;
+        println!("  {:<18} {at} frames identical", info.short_name);
+    }
+    assert!(checked > 0, "no control ROMs to check");
+}
+
+/// A crowded scene against the reference: chords across three parts and
+/// the drums, the pedal held through a shower of notes that overruns the
+/// thirty-two partials -- voice stealing, and the render loop dropping to
+/// one frame at a time while a poly aborts -- a program change mid-note,
+/// bend, modulation and expression, the pedal released, one part cut off
+/// by All Notes Off. Every controller and allocator seam the engine has,
+/// in one differential.
+#[test]
+#[ignore = "needs a ROM pair in MT32_RS_ROMS"]
+fn a_crowded_scene_matches_the_reference_engine() {
+    let Some((control, pcm)) = rom_pair() else {
+        panic!("MT32_RS_ROMS is not set or the pair is unreadable");
+    };
+    let mut oracle = Oracle::open(&control, &pcm).expect("the reference engine opens");
+    let mut ours = mt32_rs::engine::Engine::open(&control, &pcm).expect("the engine opens");
+    let rate = mt32_rs::SAMPLE_RATE as usize;
+    let mut at = 0usize;
+
+    // Reverb off everywhere a voice will sound: the eight melodic parts,
+    // and the three rhythm keys the pattern uses (each key's fourth byte,
+    // all comfortably below the SysEx address bytes' 0x80 carry).
+    for part in 0..8u32 {
+        let msg = mt32_rs::sysex::dt1(0x03_0000 + part * 0x10 + 6, &[0]);
+        oracle.play_sysex(&msg);
+        ours.play_sysex(&msg);
+    }
+    for addr in [0x03_0143u32, 0x03_014B, 0x03_015B] {
+        let msg = mt32_rs::sysex::dt1(addr, &[0]);
+        oracle.play_sysex(&msg);
+        ours.play_sysex(&msg);
+    }
+
+    let play = |oracle: &mut Oracle, ours: &mut mt32_rs::engine::Engine, msg: u32| {
+        oracle.play_msg(msg);
+        ours.play_msg(msg);
+    };
+
+    // Chords on three parts at three velocities.
+    for note in [0x30u32, 0x34, 0x37, 0x3C] {
+        play(&mut oracle, &mut ours, 0x0064_0091 | (note << 8));
+    }
+    for note in [0x28u32, 0x2F] {
+        play(&mut oracle, &mut ours, 0x0050_0092 | (note << 8));
+    }
+    for note in [0x41u32, 0x45, 0x48] {
+        play(&mut oracle, &mut ours, 0x007F_0093 | (note << 8));
+    }
+    assert_frames_match(
+        &mut oracle,
+        &mut ours,
+        rate / 2,
+        &mut at,
+        "three parts chording",
+    );
+
+    // Kick, snare and hat on the rhythm channel.
+    play(&mut oracle, &mut ours, 0x007F_2499);
+    play(&mut oracle, &mut ours, 0x0064_2699);
+    play(&mut oracle, &mut ours, 0x005A_2A99);
+    assert_frames_match(&mut oracle, &mut ours, rate / 4, &mut at, "the drums in");
+
+    // Pedal down, five notes struck and released into it.
+    play(&mut oracle, &mut ours, 0x007F_40B1);
+    for note in [0x3Eu32, 0x40, 0x43, 0x47, 0x4A] {
+        play(&mut oracle, &mut ours, 0x006E_0091 | (note << 8));
+    }
+    for note in [0x3Eu32, 0x40, 0x43, 0x47, 0x4A] {
+        play(&mut oracle, &mut ours, 0x0000_0081 | (note << 8));
+    }
+    assert_frames_match(
+        &mut oracle,
+        &mut ours,
+        rate / 4,
+        &mut at,
+        "held by the pedal",
+    );
+
+    // The shower: a dozen more held notes overrun the chip's thirty-two
+    // partials, and the books have to steal the same voices.
+    for note in [
+        0x24u32, 0x26, 0x29, 0x2B, 0x2D, 0x32, 0x35, 0x39, 0x3A, 0x3F, 0x46, 0x4D,
+    ] {
+        play(&mut oracle, &mut ours, 0x0078_0091 | (note << 8));
+    }
+    assert_frames_match(
+        &mut oracle,
+        &mut ours,
+        rate / 2,
+        &mut at,
+        "the shower past thirty-two",
+    );
+
+    // A program change lands on part 2 mid-note: its voices abort.
+    play(&mut oracle, &mut ours, 0x0000_0AC2);
+    assert_frames_match(
+        &mut oracle,
+        &mut ours,
+        rate / 4,
+        &mut at,
+        "a program change mid-note",
+    );
+
+    // Bend part 1 to the stop, modulation on part 3, expression down.
+    play(&mut oracle, &mut ours, 0x007F_7FE1);
+    play(&mut oracle, &mut ours, 0x0050_01B3);
+    play(&mut oracle, &mut ours, 0x0040_0BB1);
+    assert_frames_match(&mut oracle, &mut ours, rate / 4, &mut at, "bent and shaped");
+
+    // The pedal comes up: everything it held releases at once.
+    play(&mut oracle, &mut ours, 0x0000_40B1);
+    assert_frames_match(
+        &mut oracle,
+        &mut ours,
+        rate / 2,
+        &mut at,
+        "the pedal released",
+    );
+
+    // All Notes Off cuts part 3; the rest ring out.
+    play(&mut oracle, &mut ours, 0x0000_7BB3);
+    assert_frames_match(&mut oracle, &mut ours, rate, &mut at, "the long tail");
+
+    assert_eq!(ours.rendered_sample_count(), at as u32);
+    println!("  {at} frames identical through the crowd");
 }
