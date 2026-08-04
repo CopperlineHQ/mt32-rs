@@ -224,3 +224,41 @@ int mt32_oracle_pair_is_active(void *pair, int which) {
 }
 
 } /* extern "C" */
+
+/* The Boss reverb model standing alone, for differencing the port before
+ * it joins the synth: the integer renderer's model, opened at creation,
+ * driven by the same parameter writes and sample blocks. */
+
+#include "BReverbModel.h"
+
+extern "C" {
+
+void *mt32_oracle_reverb_new(int mode, int mt32_compatible) {
+    BReverbModel *model = BReverbModel::createBReverbModel(
+        static_cast<ReverbMode>(mode), mt32_compatible != 0,
+        RendererType_BIT16S);
+    model->open();
+    return model;
+}
+
+void mt32_oracle_reverb_free(void *model) {
+    delete static_cast<BReverbModel *>(model);
+}
+
+void mt32_oracle_reverb_set(void *model, unsigned char time,
+                            unsigned char level) {
+    static_cast<BReverbModel *>(model)->setParameters(time, level);
+}
+
+void mt32_oracle_reverb_process(void *model, const short *in_left,
+                                const short *in_right, short *out_left,
+                                short *out_right, unsigned int frames) {
+    static_cast<BReverbModel *>(model)->process(in_left, in_right, out_left,
+                                                out_right, frames);
+}
+
+int mt32_oracle_reverb_active(const void *model) {
+    return static_cast<const BReverbModel *>(model)->isActive() ? 1 : 0;
+}
+
+} // extern "C"

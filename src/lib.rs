@@ -27,6 +27,7 @@ pub mod param;
 pub mod part;
 pub mod partial;
 pub mod pcm;
+pub mod reverb;
 pub mod rom;
 pub mod sha1;
 pub mod sysex;
