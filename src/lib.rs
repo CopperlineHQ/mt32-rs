@@ -17,14 +17,17 @@
 //! what "sounds like an MT-32" means here.
 
 pub mod display;
+pub mod jitter;
 pub mod la32;
 pub mod layout;
 pub mod memory;
+pub mod param;
 pub mod pcm;
 pub mod rom;
 pub mod sha1;
 pub mod sysex;
 pub mod tables;
+pub mod tvp;
 
 /// The rate the module's DAC runs at, and so the rate [`rom`]-fed synthesis
 /// leaves the engine before any host resampling.
