@@ -72,6 +72,9 @@ pub struct Engine {
     /// Which part each MIDI channel drives, 0xFF ending the list.
     chantable: [[u8; PART_COUNT]; 16],
     reverb: Option<Reverb>,
+    /// The OUT jack: what the module has to say back, drained by the
+    /// host. Only read requests put anything here.
+    midi_out: Vec<u8>,
     /// The reference holds everything still until a short message has
     /// actually reached a part; the gate is observable through the
     /// reverb store it leaves frozen.
@@ -120,6 +123,7 @@ impl Engine {
             reserved: [0; PART_COUNT],
             chantable: [[0xFF; PART_COUNT]; 16],
             reverb: None,
+            midi_out: Vec::new(),
             activated: false,
             aborting_poly: None,
             aborting_part_ix: 0,
@@ -166,6 +170,12 @@ impl Engine {
 
     pub fn is_aborting_poly(&self) -> bool {
         self.aborting_poly.is_some()
+    }
+
+    /// Drain the OUT jack: the replies accumulated since the last call,
+    /// in the order they were made.
+    pub fn take_midi_out(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.midi_out)
     }
 
     fn refresh_reserve(&mut self) {
@@ -336,7 +346,11 @@ impl Engine {
                 }
                 self.reset();
             }
-            sysex::Outcome::ReadRequest { .. } | sysex::Outcome::Ignored => {}
+            sysex::Outcome::ReadRequest { printed_addr, len } => {
+                let reply = crate::reply::answer(&mut self.memory, printed_addr, len);
+                self.midi_out.extend(reply);
+            }
+            sysex::Outcome::Ignored => {}
         }
     }
 

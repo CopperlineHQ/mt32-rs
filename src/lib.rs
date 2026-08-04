@@ -16,6 +16,7 @@
 //! for how close to real hardware the emulation is, so matching it exactly is
 //! what "sounds like an MT-32" means here.
 
+pub mod demo;
 pub mod display;
 pub mod engine;
 pub mod jitter;
@@ -28,6 +29,7 @@ pub mod param;
 pub mod part;
 pub mod partial;
 pub mod pcm;
+pub mod reply;
 pub mod reverb;
 pub mod rom;
 pub mod sha1;
