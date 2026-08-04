@@ -23,6 +23,8 @@ pub struct Wave {
     pub looped: bool,
     /// The tuning word, MSB high.
     pub pitch: u16,
+    /// The length byte's low bit: set, the wave ignores master tune.
+    pub master_tune_immune: bool,
 }
 
 /// Which source bit feeds each output bit, MSB first: entry `u` names the
@@ -75,6 +77,7 @@ pub fn waves(control: &[u8], layout: &Layout, pcm_samples: usize) -> Result<Vec<
             len,
             looped: len_byte & 0x80 != 0,
             pitch: u16::from_le_bytes([pitch_lsb, pitch_msb]),
+            master_tune_immune: len_byte & 0x01 != 0,
         });
     }
     Ok(waves)
@@ -106,7 +109,7 @@ mod tests {
     fn the_directory_decodes_and_minds_its_bounds() {
         let mut control = vec![0u8; 0x4000];
         // Entry 0: pos 2, exponent 1 with loop; entry 1: pos 0, exponent 0.
-        control[0x3000..0x3008].copy_from_slice(&[2, 0x90, 0x34, 0x12, 0, 0x00, 0, 0]);
+        control[0x3000..0x3008].copy_from_slice(&[2, 0x91, 0x34, 0x12, 0, 0x00, 0, 0]);
         let layout = Layout {
             pcm_count: 2,
             ..crate::layout::LAYOUTS[0]
@@ -118,7 +121,8 @@ mod tests {
                 addr: 0x1000,
                 len: 0x1000,
                 looped: true,
-                pitch: 0x1234
+                pitch: 0x1234,
+                master_tune_immune: true,
             }
         );
         assert_eq!(
@@ -127,7 +131,8 @@ mod tests {
                 addr: 0,
                 len: 0x800,
                 looped: false,
-                pitch: 0
+                pitch: 0,
+                master_tune_immune: false,
             }
         );
         assert!(
