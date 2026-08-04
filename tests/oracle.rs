@@ -851,3 +851,74 @@ fn the_wave_generator_matches_the_reference_engine() {
     }
     println!("  {compared} pair samples identical");
 }
+
+/// The full sound path against the reference: both engines opened on the
+/// same pair, the same reverb-off DT1 (the wet stream is then silent on
+/// both sides -- the one seam the port has not yet filled), the same note
+/// held, bent and released, every output frame compared. This is the bar
+/// the whole sound path aims at: the LA32 pair, the ramps, all three
+/// envelopes, the jitter stream, voice allocation and the analog combine
+/// have to agree at once for a single frame to match.
+#[test]
+#[ignore = "needs a ROM pair in MT32_RS_ROMS"]
+fn a_whole_note_matches_the_reference_engine() {
+    let Some((control, pcm)) = rom_pair() else {
+        panic!("MT32_RS_ROMS is not set or the pair is unreadable");
+    };
+    let mut oracle = Oracle::open(&control, &pcm).expect("the reference engine opens");
+    let mut ours = mt32_rs::engine::Engine::open(&control, &pcm).expect("the engine opens");
+
+    let rate = mt32_rs::SAMPLE_RATE as usize;
+    let mut at = 0usize;
+    let mut compare =
+        |oracle: &mut Oracle, ours: &mut mt32_rs::engine::Engine, frames: usize, when: &str| {
+            // Uneven chunks cross the render loop's internal boundaries.
+            let mut sizes = [1usize, 7, 100, 977, 4096, 6000].into_iter().cycle();
+            let mut left = frames;
+            while left > 0 {
+                let chunk = sizes.next().unwrap().min(left);
+                let theirs = oracle.render(chunk);
+                let mut mine = vec![(0i16, 0i16); chunk];
+                ours.render(&mut mine);
+                if mine != theirs {
+                    let i = mine.iter().zip(&theirs).position(|(a, b)| a != b).unwrap();
+                    panic!(
+                        "{when}: frames diverge at {} (ours {:?}, theirs {:?})",
+                        at + i,
+                        mine[i],
+                        theirs[i]
+                    );
+                }
+                at += chunk;
+                left -= chunk;
+            }
+        };
+
+    // A quarter second of power-on quiet: the render machinery agrees
+    // before any voice sounds.
+    compare(&mut oracle, &mut ours, rate / 4, "power-on quiet");
+
+    // Part 1's reverb off. No partial feeds the reference's reverb, so
+    // its wet stream is silence too and the engines are on equal terms.
+    let dry = mt32_rs::sysex::dt1(0x03_0006, &[0]);
+    oracle.play_sysex(&dry);
+    ours.play_sysex(&dry);
+
+    // Middle C, full velocity, channel 1: part 1's piano, held.
+    oracle.play_msg(0x007F_3C91);
+    ours.play_msg(0x007F_3C91);
+    compare(&mut oracle, &mut ours, 2 * rate, "the note held");
+
+    // Bend it up a little: the pitch envelope re-aims in flight.
+    oracle.play_msg(0x0060_00E1);
+    ours.play_msg(0x0060_00E1);
+    compare(&mut oracle, &mut ours, rate / 2, "the note bent");
+
+    // Off, and the release tail out to nothing.
+    oracle.play_msg(0x0000_3C81);
+    ours.play_msg(0x0000_3C81);
+    compare(&mut oracle, &mut ours, 2 * rate, "the release tail");
+
+    assert_eq!(ours.rendered_sample_count(), at as u32);
+    println!("  {at} frames identical through hold, bend and release");
+}

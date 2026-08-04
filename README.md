@@ -82,6 +82,6 @@ engine does today, with the difference that this upstream is ours.
 | 0 | Scaffold, licences, oracle harness | done |
 | 1 | ROM identification and table extraction | done |
 | 2 | Memory model, SysEx, display strings | done |
-| 3 | The sound path (LA32, envelopes, parts, reverb, analog) | partials sound; parts/render/reverb/analog remain |
+| 3 | The sound path (LA32, envelopes, parts, reverb, analog) | a whole note renders bit-identical; reverb and the analog modes remain |
 | 4 | MIDI front end and the Copperline seam | -- |
 | 5 | Copperline integration, wasm | -- |

@@ -78,6 +78,8 @@ pub struct StartArgs<'a> {
     /// where waveform bits select the second bank.
     pub extended_pcm: bool,
     pub options: NiceOptions,
+    /// The rhythm key a drum note plays from, for its live setup reads.
+    pub rhythm_key: Option<usize>,
 }
 
 /// The live values the envelopes read each sample, assembled by the engine
@@ -119,6 +121,7 @@ pub struct Partial {
     key: u32,
     velocity: u32,
     sustain: bool,
+    rhythm_key: Option<usize>,
     pub(crate) already_outputed: bool,
 }
 
@@ -144,6 +147,7 @@ impl Partial {
             key: 0,
             velocity: 0,
             sustain: false,
+            rhythm_key: None,
             already_outputed: false,
         }
     }
@@ -201,6 +205,14 @@ impl Partial {
         self.pcm_wave
     }
 
+    pub fn rhythm_key(&self) -> Option<usize> {
+        self.rhythm_key
+    }
+
+    pub fn mix_type(&self) -> u32 {
+        self.mix_type
+    }
+
     /// Whether this partial's output goes to the reverb mix.
     pub fn should_reverb(&self) -> bool {
         self.is_active() && self.cache.as_ref().is_some_and(|c| c.reverb)
@@ -246,6 +258,7 @@ impl Partial {
         self.key = args.key;
         self.velocity = args.velocity;
         self.sustain = args.sustain;
+        self.rhythm_key = args.rhythm_key;
         self.mix_type = cache.structure_mix;
         self.structure_position = cache.structure_position;
 
@@ -634,6 +647,7 @@ mod tests {
                 partial_index: 0,
                 extended_pcm: false,
                 options: NiceOptions::default(),
+                rhythm_key: None,
             },
             0,
             None,

@@ -377,6 +377,11 @@ impl Memory {
         &self.timbres[timbre * PADDED_TIMBRE..timbre * PADDED_TIMBRE + TIMBRE]
     }
 
+    /// One patch's eight bytes.
+    pub fn patch(&self, n: usize) -> &[u8] {
+        &self.patches[n * PATCH..(n + 1) * PATCH]
+    }
+
     /// One rhythm key's four setup bytes.
     pub fn rhythm_temp(&self, key: usize) -> &[u8] {
         &self.rhythm_temp[key * RHYTHM_TEMP..(key + 1) * RHYTHM_TEMP]

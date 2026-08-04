@@ -17,6 +17,7 @@
 //! what "sounds like an MT-32" means here.
 
 pub mod display;
+pub mod engine;
 pub mod jitter;
 pub mod la32;
 pub mod layout;
