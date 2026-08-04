@@ -1381,3 +1381,119 @@ fn a_reverberant_scene_matches_the_reference_engine() {
     assert_eq!(ours.rendered_sample_count(), at as u32);
     println!("  {at} frames identical through the rooms");
 }
+
+extern "C" {
+    fn mt32_oracle_parser_new() -> *mut std::ffi::c_void;
+    fn mt32_oracle_parser_free(parser: *mut std::ffi::c_void);
+    fn mt32_oracle_parser_parse(parser: *mut std::ffi::c_void, stream: *const u8, len: c_uint);
+    fn mt32_oracle_parser_take_log(
+        parser: *mut std::ffi::c_void,
+        out: *mut u8,
+        cap: c_uint,
+    ) -> c_uint;
+}
+
+/// The stream parser against the reference: scripted gauntlets through
+/// every path -- running status carried and cleared, Realtime lodged
+/// inside everything, SysEx whole, split, aborted, oversized whole and
+/// oversized fragmented -- then a long pseudo-random byte soup parsed in
+/// awkward chunk sizes, the tagged event logs compared after every call.
+/// Needs no ROMs: the parser stands alone on both sides.
+#[test]
+fn the_stream_parser_matches_the_reference_engine() {
+    struct Log(Vec<u8>);
+    impl mt32_rs::midi::Sink for Log {
+        fn short_message(&mut self, message: u32) {
+            self.0.push(1);
+            self.0.extend_from_slice(&message.to_le_bytes());
+        }
+        fn sysex(&mut self, frame: &[u8]) {
+            self.0.push(2);
+            self.0
+                .extend_from_slice(&(frame.len() as u32).to_le_bytes());
+            self.0.extend_from_slice(frame);
+        }
+        fn realtime(&mut self, byte: u8) {
+            self.0.push(3);
+            self.0.push(byte);
+        }
+        fn dropped(&mut self, _what: &'static str) {
+            self.0.push(4);
+        }
+    }
+
+    let theirs = unsafe { mt32_oracle_parser_new() };
+    let mut ours = mt32_rs::midi::Parser::new();
+    let mut log = Log(Vec::new());
+    let mut compared = 0u64;
+    let mut feed = |chunk: &[u8], what: &str| {
+        unsafe { mt32_oracle_parser_parse(theirs, chunk.as_ptr(), chunk.len() as c_uint) };
+        ours.parse(chunk, &mut log);
+        let mut reference = vec![0u8; log.0.len().max(1)];
+        let got = unsafe {
+            mt32_oracle_parser_take_log(theirs, reference.as_mut_ptr(), log.0.len() as c_uint)
+        };
+        assert_eq!(got as usize, log.0.len(), "{what}: event log length");
+        reference.truncate(got as usize);
+        assert_eq!(log.0, reference, "{what}: event log");
+        compared += log.0.len() as u64;
+        log.0.clear();
+    };
+
+    // The scripted gauntlet, one path at a time.
+    feed(&[0x91, 0x3C, 0x7F, 0x40, 0x7F], "running status carries");
+    feed(&[0x3C, 0x00], "running status across calls");
+    feed(&[0x40], "a data byte with no message ahead of it");
+    feed(
+        &[0x00, 0xC1, 0x0A, 0x05],
+        "program change, then borrowed again",
+    );
+    feed(&[0xF6], "tune request buffered at a call boundary");
+    feed(&[0x3C, 0x40], "flushes on the next call, then drops data");
+    feed(
+        &[0x92, 0x30, 0xFE, 0x50, 0xFA],
+        "realtime inside a short message",
+    );
+    feed(
+        &[0x93, 0x30, 0x94, 0x40, 0x60],
+        "a message cut off by a status",
+    );
+    feed(&[0xF0, 0x41, 0x10, 0x16, 0x12, 0x01, 0xF7], "a SysEx whole");
+    feed(&[0xF0, 0x41], "a SysEx opens");
+    feed(&[0x10, 0xF8, 0x16], "grows around a realtime");
+    feed(
+        &[0xF7, 0x91, 0x3C, 0x40],
+        "and closes, with a note behind it",
+    );
+    feed(&[0xF0, 0x41, 0x92, 0x30, 0x60], "a SysEx aborted at open");
+    feed(&[0xF0, 0x41, 0x10], "a SysEx opens again");
+    feed(&[0x93, 0x30, 0x60], "and dies to a status mid-fragment");
+    feed(
+        &[0xF1, 0x30, 0x3C],
+        "system common eats one byte, drops the next",
+    );
+
+    // An oversized frame in one call is delivered; fragmented, dropped.
+    let mut giant = vec![0xF0];
+    giant.extend(std::iter::repeat_n(0x55u8, 40_000));
+    giant.push(0xF7);
+    feed(&giant, "an oversized SysEx whole in one call");
+    feed(&giant[..30_000], "an oversized SysEx starts fragmented");
+    feed(&giant[30_000..], "and overruns the store");
+
+    // The byte soup: every state crossed against every input class, in
+    // chunk sizes that never line up with message boundaries.
+    let soup: Vec<u8> = (0..20_000u32)
+        .map(|i| (i.wrapping_mul(2654435761) >> 13) as u8)
+        .collect();
+    let mut sizes = [1usize, 2, 3, 5, 7, 11, 127].into_iter().cycle();
+    let mut fed = 0;
+    while fed < soup.len() {
+        let chunk = sizes.next().unwrap().min(soup.len() - fed);
+        feed(&soup[fed..fed + chunk], "the byte soup");
+        fed += chunk;
+    }
+
+    unsafe { mt32_oracle_parser_free(theirs) };
+    println!("  {compared} event-log bytes identical");
+}

@@ -262,3 +262,75 @@ int mt32_oracle_reverb_active(const void *model) {
 }
 
 } // extern "C"
+
+/* The MIDI stream parser standing alone: events collected into a tagged
+ * log the differential reads back -- 1 + message for shorts, 2 + length
+ * + bytes for SysEx, 3 + byte for Realtime, 4 for each dropped-data
+ * note. Order preserved, which is half the behaviour. */
+
+#include <vector>
+
+#include "MidiStreamParser.h"
+
+namespace {
+
+struct CollectingParser : MidiReceiver, MidiReporter {
+    MidiStreamParserImpl *impl;
+    std::vector<unsigned char> log;
+
+    void handleShortMessage(const Bit32u message) {
+        log.push_back(1);
+        for (int i = 0; i < 4; i++) log.push_back((message >> (8 * i)) & 0xFF);
+    }
+
+    void handleSysex(const Bit8u stream[], const Bit32u length) {
+        log.push_back(2);
+        for (int i = 0; i < 4; i++) log.push_back((length >> (8 * i)) & 0xFF);
+        log.insert(log.end(), stream, stream + length);
+    }
+
+    void handleSystemRealtimeMessage(const Bit8u realtime) {
+        log.push_back(3);
+        log.push_back(realtime);
+    }
+
+    void printDebug(const char *) {
+        log.push_back(4);
+    }
+};
+
+} // namespace
+
+extern "C" {
+
+void *mt32_oracle_parser_new() {
+    CollectingParser *p = new CollectingParser();
+    p->impl = new MidiStreamParserImpl(*p, *p, SYSEX_BUFFER_SIZE);
+    return p;
+}
+
+void mt32_oracle_parser_free(void *parser) {
+    CollectingParser *p = static_cast<CollectingParser *>(parser);
+    delete p->impl;
+    delete p;
+}
+
+void mt32_oracle_parser_parse(void *parser, const unsigned char *stream,
+                              unsigned int len) {
+    static_cast<CollectingParser *>(parser)->impl->parseStream(stream, len);
+}
+
+/* Copy out and clear the event log; returns its length. If it exceeds
+ * `cap`, nothing is copied or cleared and the needed length returns. */
+unsigned int mt32_oracle_parser_take_log(void *parser, unsigned char *out,
+                                         unsigned int cap) {
+    CollectingParser *p = static_cast<CollectingParser *>(parser);
+    unsigned int len = static_cast<unsigned int>(p->log.size());
+    if (len <= cap) {
+        memcpy(out, p->log.data(), len);
+        p->log.clear();
+    }
+    return len;
+}
+
+} // extern "C"

@@ -32,6 +32,16 @@ use crate::rom;
 use crate::sysex;
 use crate::tables::Tables;
 
+impl crate::midi::Sink for Engine {
+    fn short_message(&mut self, message: u32) {
+        self.play_msg(message);
+    }
+
+    fn sysex(&mut self, frame: &[u8]) {
+        self.play_sysex(frame);
+    }
+}
+
 /// The chip's voice count, and the poly pool that matches it.
 pub const PARTIAL_COUNT: usize = 32;
 

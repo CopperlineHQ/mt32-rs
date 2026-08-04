@@ -22,6 +22,7 @@ pub mod jitter;
 pub mod la32;
 pub mod layout;
 pub mod memory;
+pub mod midi;
 pub mod note;
 pub mod param;
 pub mod part;
