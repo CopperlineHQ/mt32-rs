@@ -667,3 +667,187 @@ fn the_ramp_matches_the_reference_engine() {
     }
     unsafe { mt32_oracle_ramp_free(theirs) };
 }
+
+extern "C" {
+    fn mt32_oracle_pair_new() -> *mut std::ffi::c_void;
+    fn mt32_oracle_pair_free(pair: *mut std::ffi::c_void);
+    fn mt32_oracle_pair_init(pair: *mut std::ffi::c_void, ring_modulated: c_int, mixed: c_int);
+    fn mt32_oracle_pair_init_synth(
+        pair: *mut std::ffi::c_void,
+        which: c_int,
+        sawtooth: c_int,
+        pulse_width: u8,
+        resonance: u8,
+    );
+    fn mt32_oracle_pair_init_pcm(
+        pair: *mut std::ffi::c_void,
+        which: c_int,
+        pcm_wave: *const i16,
+        len: c_uint,
+        looped: c_int,
+    );
+    fn mt32_oracle_pair_generate(
+        pair: *mut std::ffi::c_void,
+        which: c_int,
+        amp: c_uint,
+        pitch: u16,
+        cutoff: c_uint,
+    );
+    fn mt32_oracle_pair_next_out(pair: *mut std::ffi::c_void) -> i16;
+}
+
+/// The wave generator pair against the reference across the parameter
+/// space: square and sawtooth at swept pulse widths, resonances, pitches
+/// and cutoffs, with the amp ramping; then PCM waves looped and unlooped,
+/// mixed pairs and ring-modulated pairs with and without the master mixed
+/// back in. Every output sample equal. Needs no ROMs: the PCM wave is a
+/// synthetic store both engines read.
+#[test]
+fn the_wave_generator_matches_the_reference_engine() {
+    let tables = mt32_rs::tables::Tables::new();
+    // A deterministic sample store with the full value range represented.
+    let pcm: Vec<i16> = (0..0x1000u32)
+        .map(|i| (i.wrapping_mul(2654435761) >> 16) as i16)
+        .collect();
+    let mut compared = 0u64;
+
+    let mut run = |setup_theirs: &dyn Fn(*mut std::ffi::c_void),
+                   setup_ours: &mut dyn FnMut(&mut mt32_rs::la32::wave::IntPartialPair),
+                   samples: usize,
+                   what: &str| {
+        let theirs = unsafe { mt32_oracle_pair_new() };
+        let mut ours = mt32_rs::la32::wave::IntPartialPair::new();
+        setup_theirs(theirs);
+        setup_ours(&mut ours);
+        for n in 0..samples {
+            // Sweep the live parameters so every segment and phase is
+            // crossed: amp decaying, pitch climbing, cutoff swinging.
+            let amp = (n as u32 * 997) % (1 << 26);
+            let pitch = ((0x2000 + n * 37) & 0x7FFF) as u16;
+            let cutoff = ((n as u32 * 61) % 250) << 18;
+            unsafe {
+                mt32_oracle_pair_generate(theirs, 0, amp, pitch, cutoff);
+                mt32_oracle_pair_generate(theirs, 1, amp / 2, pitch ^ 0x111, cutoff / 2);
+            }
+            ours.generate_next_sample(
+                &tables,
+                &pcm,
+                mt32_rs::la32::wave::Pair::Master,
+                amp,
+                pitch,
+                cutoff,
+            );
+            ours.generate_next_sample(
+                &tables,
+                &pcm,
+                mt32_rs::la32::wave::Pair::Slave,
+                amp / 2,
+                pitch ^ 0x111,
+                cutoff / 2,
+            );
+            let reference = unsafe { mt32_oracle_pair_next_out(theirs) };
+            let sample = ours.next_out_sample(&tables);
+            assert_eq!(sample, reference, "{what}, sample {n}");
+            compared += 1;
+        }
+        unsafe { mt32_oracle_pair_free(theirs) };
+    };
+
+    for sawtooth in [false, true] {
+        for pulse_width in [0u8, 64, 128, 200, 255] {
+            for resonance in [1u8, 10, 20, 30] {
+                run(
+                    &|t| unsafe {
+                        mt32_oracle_pair_init(t, 0, 0);
+                        mt32_oracle_pair_init_synth(
+                            t,
+                            0,
+                            sawtooth as c_int,
+                            pulse_width,
+                            resonance,
+                        );
+                        mt32_oracle_pair_init_synth(
+                            t,
+                            1,
+                            (!sawtooth) as c_int,
+                            pulse_width / 2,
+                            31 - resonance,
+                        );
+                    },
+                    &mut |o| {
+                        o.init(false, false);
+                        o.init_synth(
+                            &tables,
+                            mt32_rs::la32::wave::Pair::Master,
+                            sawtooth,
+                            pulse_width,
+                            resonance,
+                        );
+                        o.init_synth(
+                            &tables,
+                            mt32_rs::la32::wave::Pair::Slave,
+                            !sawtooth,
+                            pulse_width / 2,
+                            31 - resonance,
+                        );
+                    },
+                    512,
+                    &format!("synth pair saw={sawtooth} pw={pulse_width} res={resonance}"),
+                );
+            }
+        }
+    }
+
+    // PCM against synth, all pair structures, looped and once-through.
+    for (ring, mixed) in [(false, false), (true, false), (true, true)] {
+        for looped in [false, true] {
+            run(
+                &|t| unsafe {
+                    mt32_oracle_pair_init(t, ring as c_int, mixed as c_int);
+                    mt32_oracle_pair_init_pcm(
+                        t,
+                        0,
+                        pcm.as_ptr().wrapping_add(0x100),
+                        0x800,
+                        looped as c_int,
+                    );
+                    mt32_oracle_pair_init_pcm(
+                        t,
+                        1,
+                        pcm.as_ptr().wrapping_add(0x300),
+                        0x400,
+                        looped as c_int,
+                    );
+                },
+                &mut |o| {
+                    o.init(ring, mixed);
+                    o.init_pcm(mt32_rs::la32::wave::Pair::Master, 0x100, 0x800, looped);
+                    o.init_pcm(mt32_rs::la32::wave::Pair::Slave, 0x300, 0x400, looped);
+                },
+                2048,
+                &format!("pcm pair ring={ring} mixed={mixed} looped={looped}"),
+            );
+            run(
+                &|t| unsafe {
+                    mt32_oracle_pair_init(t, ring as c_int, mixed as c_int);
+                    mt32_oracle_pair_init_synth(t, 0, 1, 90, 25);
+                    mt32_oracle_pair_init_pcm(
+                        t,
+                        1,
+                        pcm.as_ptr().wrapping_add(0x40),
+                        0x800,
+                        looped as c_int,
+                    );
+                },
+                &mut |o| {
+                    o.init(ring, mixed);
+                    o.init_synth(&tables, mt32_rs::la32::wave::Pair::Master, true, 90, 25);
+                    o.init_pcm(mt32_rs::la32::wave::Pair::Slave, 0x40, 0x800, looped);
+                },
+                2048,
+                &format!("synth+pcm ring={ring} mixed={mixed} looped={looped}"),
+            );
+        }
+    }
+    println!("  {compared} pair samples identical");
+}

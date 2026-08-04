@@ -9,6 +9,7 @@
 
 #include "File.h"
 #include "LA32Ramp.h"
+#include "LA32WaveGenerator.h"
 #include "Tables.h"
 #include "ROMInfo.h"
 #include "Synth.h"
@@ -170,6 +171,55 @@ unsigned long long mt32_oracle_ramp_next(void *ramp) {
     unsigned long long value = r->nextValue();
     if (r->checkInterrupt()) value |= 1ULL << 32;
     return value;
+}
+
+/* One integer partial pair, the unit that turns parameters into linear
+ * samples. Master/slave selected by `which` (0 master, 1 slave). */
+void *mt32_oracle_pair_new() {
+    LA32IntPartialPair::initTables(Tables::getInstance());
+    return new LA32IntPartialPair();
+}
+
+void mt32_oracle_pair_free(void *pair) {
+    delete static_cast<LA32IntPartialPair *>(pair);
+}
+
+void mt32_oracle_pair_init(void *pair, int ring_modulated, int mixed) {
+    static_cast<LA32IntPartialPair *>(pair)->init(ring_modulated != 0, mixed != 0);
+}
+
+void mt32_oracle_pair_init_synth(void *pair, int which, int sawtooth,
+                                 unsigned char pulse_width, unsigned char resonance) {
+    static_cast<LA32IntPartialPair *>(pair)->initSynth(
+        which == 0 ? LA32PartialPair::MASTER : LA32PartialPair::SLAVE,
+        sawtooth != 0, pulse_width, resonance);
+}
+
+void mt32_oracle_pair_init_pcm(void *pair, int which, const short *pcm_wave,
+                               unsigned int len, int looped) {
+    static_cast<LA32IntPartialPair *>(pair)->initPCM(
+        which == 0 ? LA32PartialPair::MASTER : LA32PartialPair::SLAVE,
+        pcm_wave, len, looped != 0);
+}
+
+void mt32_oracle_pair_generate(void *pair, int which, unsigned int amp,
+                               unsigned short pitch, unsigned int cutoff) {
+    static_cast<LA32IntPartialPair *>(pair)->generateNextSample(
+        which == 0 ? LA32PartialPair::MASTER : LA32PartialPair::SLAVE, amp, pitch, cutoff);
+}
+
+short mt32_oracle_pair_next_out(void *pair) {
+    return static_cast<LA32IntPartialPair *>(pair)->nextOutSample();
+}
+
+void mt32_oracle_pair_deactivate(void *pair, int which) {
+    static_cast<LA32IntPartialPair *>(pair)->deactivate(
+        which == 0 ? LA32PartialPair::MASTER : LA32PartialPair::SLAVE);
+}
+
+int mt32_oracle_pair_is_active(void *pair, int which) {
+    return static_cast<LA32IntPartialPair *>(pair)->isActive(
+        which == 0 ? LA32PartialPair::MASTER : LA32PartialPair::SLAVE) ? 1 : 0;
 }
 
 } /* extern "C" */

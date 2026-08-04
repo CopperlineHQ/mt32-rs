@@ -3,3 +3,4 @@
 //! The LA32: the chip that makes the sound.
 
 pub mod ramp;
+pub mod wave;
