@@ -27,6 +27,8 @@ pub mod rom;
 pub mod sha1;
 pub mod sysex;
 pub mod tables;
+pub mod tva;
+pub mod tvf;
 pub mod tvp;
 
 /// The rate the module's DAC runs at, and so the rate [`rom`]-fed synthesis
