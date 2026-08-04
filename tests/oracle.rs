@@ -623,3 +623,47 @@ fn the_display_matches_the_reference_engine() {
         println!("  {short:<18} display identical through the scenario");
     }
 }
+
+extern "C" {
+    fn mt32_oracle_ramp_new() -> *mut std::ffi::c_void;
+    fn mt32_oracle_ramp_free(ramp: *mut std::ffi::c_void);
+    fn mt32_oracle_ramp_start(ramp: *mut std::ffi::c_void, target: u8, increment: u8);
+    fn mt32_oracle_ramp_next(ramp: *mut std::ffi::c_void) -> u64;
+}
+
+/// Every ramp the chip can be asked for, against the reference: all 256
+/// increments crossed with rising, falling and degenerate targets, every
+/// step's value and interrupt compared. Needs no ROMs -- the ramp reads
+/// only the exponent table.
+#[test]
+fn the_ramp_matches_the_reference_engine() {
+    let tables = mt32_rs::tables::Tables::new();
+    let theirs = unsafe { mt32_oracle_ramp_new() };
+    let mut ours = mt32_rs::la32::ramp::Ramp::new();
+    for increment in 0..=255u8 {
+        for (from, target) in [(0u8, 255u8), (255, 0), (128, 128), (200, 60), (60, 200)] {
+            // Put both ramps at `from` exactly: aim there with the fastest
+            // slew in the right direction and run until settled.
+            let seed = if from >= 128 { 0x7F } else { 0xFF };
+            unsafe { mt32_oracle_ramp_start(theirs, from, seed) };
+            ours.start(&tables, from, seed);
+            for _ in 0..64 {
+                unsafe { mt32_oracle_ramp_next(theirs) };
+                ours.next_value();
+            }
+            unsafe { mt32_oracle_ramp_start(theirs, target, increment) };
+            ours.start(&tables, target, increment);
+            for step in 0..2048 {
+                let reference = unsafe { mt32_oracle_ramp_next(theirs) };
+                let value = ours.next_value();
+                let interrupt = ours.check_interrupt();
+                let packed = u64::from(value) | (u64::from(interrupt) << 32);
+                assert_eq!(
+                    packed, reference,
+                    "increment 0x{increment:02X}, {from}->{target}, step {step}"
+                );
+            }
+        }
+    }
+    unsafe { mt32_oracle_ramp_free(theirs) };
+}

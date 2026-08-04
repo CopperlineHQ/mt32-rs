@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include "File.h"
+#include "LA32Ramp.h"
 #include "Tables.h"
 #include "ROMInfo.h"
 #include "Synth.h"
@@ -145,6 +146,30 @@ void mt32_oracle_tables(unsigned char *curves559, unsigned short *exp512,
     memcpy(exp512, t.exp9, 512 * sizeof(unsigned short));
     memcpy(logsin512, t.logsin9, 512 * sizeof(unsigned short));
     memcpy(decay8, t.resAmpDecayFactors, 8);
+}
+
+/* One LA32 ramp, for stepwise comparison. The ramp reads the exponent
+ * table through a static pointer set at synth open; initialise it here so
+ * a ramp stands alone. */
+void *mt32_oracle_ramp_new() {
+    LA32Ramp::initTables(Tables::getInstance());
+    return new LA32Ramp();
+}
+
+void mt32_oracle_ramp_free(void *ramp) {
+    delete static_cast<LA32Ramp *>(ramp);
+}
+
+void mt32_oracle_ramp_start(void *ramp, unsigned char target, unsigned char increment) {
+    static_cast<LA32Ramp *>(ramp)->startRamp(target, increment);
+}
+
+/* One step: the value, with the interrupt flag packed into bit 32. */
+unsigned long long mt32_oracle_ramp_next(void *ramp) {
+    LA32Ramp *r = static_cast<LA32Ramp *>(ramp);
+    unsigned long long value = r->nextValue();
+    if (r->checkInterrupt()) value |= 1ULL << 32;
+    return value;
 }
 
 } /* extern "C" */

@@ -17,6 +17,7 @@
 //! what "sounds like an MT-32" means here.
 
 pub mod display;
+pub mod la32;
 pub mod layout;
 pub mod memory;
 pub mod pcm;
