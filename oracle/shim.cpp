@@ -1,0 +1,118 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later
+ *
+ * The oracle: a thin C surface over the reference C++ engine, shaped for
+ * the differential tests and nothing else. The tests open both engines on
+ * the same ROMs, feed them the same MIDI, and compare what comes out.
+ */
+
+#include <cstring>
+
+#include "File.h"
+#include "ROMInfo.h"
+#include "Synth.h"
+
+using namespace MT32Emu;
+
+/* The pitch-envelope jitter source, standing in for libc rand() via a
+ * compile-time rename (see build.rs): the C standard's example LCG, chosen
+ * because it is trivial to mirror bit for bit in Rust. Seeded afresh by
+ * every open, so a synth's output depends on nothing outside it. One
+ * engine at a time: the state is as global as the libc one it replaces. */
+static unsigned long oracle_rand_state = 1;
+
+extern "C" int mt32_oracle_rand() {
+    oracle_rand_state = oracle_rand_state * 1103515245 + 12345;
+    return static_cast<int>((oracle_rand_state / 65536) % 32768);
+}
+
+namespace {
+
+struct Oracle {
+    ArrayFile *controlFile;
+    ArrayFile *pcmFile;
+    const ROMImage *controlImage;
+    const ROMImage *pcmImage;
+    Synth *synth;
+};
+
+} // namespace
+
+extern "C" {
+
+/* Open a synth on in-memory ROM images. `analog_mode` takes the engine's
+ * AnalogOutputMode values (0 digital-only, 1 coarse, 2 accurate,
+ * 3 oversampled). Returns null if either image is not a recognised ROM or
+ * the synth refuses to open. */
+void *mt32_oracle_open(const unsigned char *control, size_t control_len,
+                       const unsigned char *pcm, size_t pcm_len,
+                       int analog_mode) {
+    oracle_rand_state = 1;
+    Oracle *o = new Oracle();
+    o->controlFile = new ArrayFile(control, control_len);
+    o->pcmFile = new ArrayFile(pcm, pcm_len);
+    o->controlImage = ROMImage::makeROMImage(o->controlFile);
+    o->pcmImage = ROMImage::makeROMImage(o->pcmFile);
+    o->synth = new Synth();
+    if (o->controlImage->getROMInfo() == NULL || o->pcmImage->getROMInfo() == NULL
+        || !o->synth->open(*o->controlImage, *o->pcmImage,
+                           static_cast<AnalogOutputMode>(analog_mode))) {
+        delete o->synth;
+        ROMImage::freeROMImage(o->controlImage);
+        ROMImage::freeROMImage(o->pcmImage);
+        delete o->controlFile;
+        delete o->pcmFile;
+        delete o;
+        return NULL;
+    }
+    return o;
+}
+
+void mt32_oracle_close(void *handle) {
+    Oracle *o = static_cast<Oracle *>(handle);
+    o->synth->close();
+    delete o->synth;
+    ROMImage::freeROMImage(o->controlImage);
+    ROMImage::freeROMImage(o->pcmImage);
+    delete o->controlFile;
+    delete o->pcmFile;
+    delete o;
+}
+
+/* The rate the synth renders at in the opened analog mode. */
+unsigned int mt32_oracle_sample_rate(const void *handle) {
+    return static_cast<const Oracle *>(handle)->synth->getStereoOutputSampleRate();
+}
+
+/* One short MIDI message, low byte first, played immediately. */
+void mt32_oracle_play_msg(void *handle, unsigned int msg) {
+    static_cast<Oracle *>(handle)->synth->playMsgNow(msg);
+}
+
+/* One SysEx message, F0..F7 inclusive, played immediately. */
+void mt32_oracle_play_sysex(void *handle, const unsigned char *sysex, unsigned int len) {
+    static_cast<Oracle *>(handle)->synth->playSysexNow(sysex, len);
+}
+
+/* Render interleaved stereo, two Bit16s per frame. */
+void mt32_oracle_render(void *handle, short *stream, unsigned int frames) {
+    static_cast<Oracle *>(handle)->synth->render(stream, frames);
+}
+
+/* The LCD line (21 bytes: 20 characters and a terminator) and the MIDI
+ * MESSAGE lamp, returned as the lamp state. */
+int mt32_oracle_display(const void *handle, char *buffer21) {
+    return static_cast<const Oracle *>(handle)->synth->getDisplayState(buffer21, false);
+}
+
+/* Read `len` bytes of the synth's addressable memory. `addr` is the
+ * printed three-byte form the manual and SysEx use (0x100000 for the
+ * system area); the engine wants the three 7-bit bytes packed flat, so it
+ * is converted here. */
+void mt32_oracle_read_memory(void *handle, unsigned int addr, unsigned int len,
+                             unsigned char *out) {
+    const unsigned int flat =
+        ((addr & 0x7f0000) >> 2) | ((addr & 0x7f00) >> 1) | (addr & 0x7f);
+    static_cast<Oracle *>(handle)->synth->readMemory(flat, len, out);
+}
+
+} /* extern "C" */
