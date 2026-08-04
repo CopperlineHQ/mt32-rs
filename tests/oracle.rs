@@ -472,3 +472,154 @@ fn sysex_writes_match_the_reference_engine() {
         steps.len() + 2
     );
 }
+
+/// Our display beside the reference engine's: the same DT1 traffic and the
+/// same rendered clock drive both, through the wiring the synth layer will
+/// use -- the lamp on any accepted write, custom messages by their offset,
+/// the volume poke on a system write, the banner on a bad checksum. Run
+/// over an elder and a later firmware, whose display behaviours differ.
+#[test]
+#[ignore = "needs a ROM directory in MT32_RS_ROMS_ALL"]
+fn the_display_matches_the_reference_engine() {
+    let Some(dir) = std::env::var_os("MT32_RS_ROMS_ALL") else {
+        panic!("MT32_RS_ROMS_ALL is not set");
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let read_named = |short: &str| {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            if let Ok(data) = std::fs::read(entry.path()) {
+                if mt32_rs::rom::identify(&data).map(|i| i.short_name) == Some(short) {
+                    return data;
+                }
+            }
+        }
+        panic!("{short} not present");
+    };
+    let pcm = read_named("pcm_mt32");
+
+    for short in ["ctrl_mt32_1_07", "ctrl_mt32_2_07"] {
+        let control = read_named(short);
+        let info = mt32_rs::rom::identify(&control).unwrap();
+        let layout = mt32_rs::layout::layout_for(info).unwrap();
+        let mut oracle = Oracle::open(&control, &pcm).expect(short);
+        let mut memory = mt32_rs::memory::Memory::power_on(&control, layout).expect(short);
+        let mut display = mt32_rs::display::Display::power_on(&control, layout);
+        let mut now: u32 = 0;
+
+        let render = |oracle: &mut Oracle,
+                      display: &mut mt32_rs::display::Display,
+                      now: &mut u32,
+                      frames: u32| {
+            oracle.render(frames as usize);
+            *now += frames;
+            display.refresh(*now);
+        };
+        // The synth-layer wiring this crate's callers will use.
+        let play = |oracle: &mut Oracle,
+                    memory: &mut mt32_rs::memory::Memory,
+                    display: &mut mt32_rs::display::Display,
+                    now: u32,
+                    message: &[u8]| {
+            unsafe { mt32_oracle_play_sysex(oracle.0, message.as_ptr(), message.len() as c_uint) };
+            match mt32_rs::sysex::play(memory, message) {
+                mt32_rs::sysex::Outcome::Written(touched) => {
+                    display.midi_message_played(now);
+                    for touch in touched {
+                        match touch {
+                            mt32_rs::memory::Touched::Display { offset, data } => {
+                                let len = data.len().min(mt32_rs::display::LCD_TEXT_SIZE);
+                                display.custom_message(&data[..len], offset);
+                            }
+                            mt32_rs::memory::Touched::Ram(mt32_rs::memory::Region::System) => {
+                                display.master_volume_changed();
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                mt32_rs::sysex::Outcome::DisplayControl(bytes) => {
+                    display.midi_message_played(now);
+                    display.display_control(&bytes[1..]);
+                }
+                mt32_rs::sysex::Outcome::ChecksumError => display.checksum_error(now),
+                other => panic!("{short}: unexpected outcome {other:?}"),
+            }
+        };
+        let check = |oracle: &mut Oracle,
+                     memory: &mut mt32_rs::memory::Memory,
+                     display: &mut mt32_rs::display::Display,
+                     when: &str| {
+            let (theirs, their_led) = oracle.display();
+            let mut vol = [0u8; 1];
+            memory.read(mt32_rs::memory::flat(0x10_0016), &mut vol);
+            let (mine, my_led) = display.state(vol[0]);
+            let mine_text: String = mine
+                .iter()
+                .map(|&b| if b == 1 { '\u{25A0}' } else { b as char })
+                .collect();
+            assert_eq!(mine_text, theirs, "{short}: {when}");
+            assert_eq!(my_led, their_led, "{short}: lamp, {when}");
+        };
+
+        render(&mut oracle, &mut display, &mut now, 256);
+        check(&mut oracle, &mut memory, &mut display, "the startup banner");
+
+        render(&mut oracle, &mut display, &mut now, 44_000);
+        check(&mut oracle, &mut memory, &mut display, "the main screen");
+
+        let hello = mt32_rs::sysex::dt1(0x20_0000, b"GREETINGS FROM RUST ");
+        play(&mut oracle, &mut memory, &mut display, now, &hello);
+        render(&mut oracle, &mut display, &mut now, 256);
+        check(
+            &mut oracle,
+            &mut memory,
+            &mut display,
+            "a custom message, lamp lit",
+        );
+
+        render(&mut oracle, &mut display, &mut now, 8_000);
+        check(&mut oracle, &mut memory, &mut display, "the lamp gone out");
+
+        let position = mt32_rs::sysex::dt1(0x20_0005, b"!");
+        play(&mut oracle, &mut memory, &mut display, now, &position);
+        render(&mut oracle, &mut display, &mut now, 256);
+        check(&mut oracle, &mut memory, &mut display, "a positional write");
+
+        let volume = mt32_rs::sysex::dt1(0x10_0016, &[51]);
+        play(&mut oracle, &mut memory, &mut display, now, &volume);
+        render(&mut oracle, &mut display, &mut now, 256);
+        check(&mut oracle, &mut memory, &mut display, "the volume written");
+
+        let mut bad = mt32_rs::sysex::dt1(0x10_0016, &[52]);
+        let at = bad.len() - 2;
+        bad[at] ^= 1;
+        play(&mut oracle, &mut memory, &mut display, now, &bad);
+        render(&mut oracle, &mut display, &mut now, 256);
+        check(
+            &mut oracle,
+            &mut memory,
+            &mut display,
+            "the checksum banner",
+        );
+
+        render(&mut oracle, &mut display, &mut now, 50_000);
+        check(
+            &mut oracle,
+            &mut memory,
+            &mut display,
+            "whether the banner outlives its timer",
+        );
+
+        let reset = mt32_rs::sysex::dt1(0x20_0100, &[]);
+        play(&mut oracle, &mut memory, &mut display, now, &reset);
+        render(&mut oracle, &mut display, &mut now, 256);
+        check(
+            &mut oracle,
+            &mut memory,
+            &mut display,
+            "after Display Reset",
+        );
+
+        println!("  {short:<18} display identical through the scenario");
+    }
+}

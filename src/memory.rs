@@ -133,7 +133,11 @@ impl Region {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Touched {
     Ram(Region),
-    Display(Vec<u8>),
+    /// A write into the display window: where in it, and what arrived.
+    Display {
+        offset: u32,
+        data: Vec<u8>,
+    },
     Reset,
 }
 
@@ -373,10 +377,14 @@ impl Memory {
     /// first touched entry when the write began past the timbre-choice
     /// bytes, and the rhythm part, which has no timbre temp.
     fn reload_touched_timbres(&mut self, off: usize, len: usize) {
-        let first = off / PATCH_TEMP;
-        let last = (off + len - 1) / PATCH_TEMP;
+        // The entry arithmetic truncates toward zero as the engine's does,
+        // which is what makes a zero-length write at an entry's start
+        // still count that entry as touched.
+        let first = (off / PATCH_TEMP) as isize;
+        let last = (off as isize + len as isize - 1) / PATCH_TEMP as isize;
         for part in first..=last.min(8) {
-            if part == 8 || (part == first && off % PATCH_TEMP > 2) {
+            let part = part as usize;
+            if part == 8 || (part as isize == first && off % PATCH_TEMP > 2) {
                 continue;
             }
             let at = part * PATCH_TEMP;
@@ -392,10 +400,10 @@ impl Memory {
     /// firmware lets it. What it touched, in order.
     pub fn write(&mut self, mut addr: u32, mut data: &[u8]) -> Vec<Touched> {
         let mut touched = Vec::new();
-        while !data.is_empty() {
-            let Some(region) = Region::find(addr) else {
-                break;
-            };
+        // A message carrying only an address still reaches its region --
+        // that is how Display Reset and the empty custom message work --
+        // so one round runs even with nothing to store.
+        while let Some(region) = Region::find(addr) {
             let take = data.len().min((region.end() - addr) as usize);
             match self.backing(region) {
                 Some((bytes, limits)) => {
@@ -417,12 +425,18 @@ impl Memory {
                     touched.push(Touched::Ram(region));
                 }
                 None if region == Region::Display => {
-                    touched.push(Touched::Display(data[..take].to_vec()));
+                    touched.push(Touched::Display {
+                        offset: addr - region.start(),
+                        data: data[..take].to_vec(),
+                    });
                 }
                 None => touched.push(Touched::Reset),
             }
             addr += take as u32;
             data = &data[take..];
+            if data.is_empty() {
+                break;
+            }
         }
         touched
     }
