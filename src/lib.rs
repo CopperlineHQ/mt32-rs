@@ -16,6 +16,8 @@
 //! for how close to real hardware the emulation is, so matching it exactly is
 //! what "sounds like an MT-32" means here.
 
+pub mod layout;
+pub mod pcm;
 pub mod rom;
 pub mod sha1;
 

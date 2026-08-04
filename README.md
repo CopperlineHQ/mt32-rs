@@ -71,7 +71,7 @@ engine does today, with the difference that this upstream is ours.
 | Phase | What | State |
 |---|---|---|
 | 0 | Scaffold, licences, oracle harness | done |
-| 1 | ROM identification and table extraction | identification done |
+| 1 | ROM identification and table extraction | maps + PCM store done |
 | 2 | Memory model, SysEx, display strings | -- |
 | 3 | The sound path (LA32, envelopes, parts, reverb, analog) | -- |
 | 4 | MIDI front end and the Copperline seam | -- |

@@ -194,3 +194,58 @@ fn identification_agrees_with_the_reference_engine() {
     assert!(full > 0, "no full ROMs among them");
     println!("agreed on {seen} files, {full} of them full ROMs");
 }
+
+/// The layouts read real images correctly: every full control ROM in the
+/// directory yields printable startup and error messages at the layout's
+/// offsets, and its wave directory decodes in bounds against its own
+/// family's sample store.
+#[test]
+#[ignore = "needs a ROM directory in MT32_RS_ROMS_ALL"]
+fn the_layouts_read_the_real_images() {
+    let Some(dir) = std::env::var_os("MT32_RS_ROMS_ALL") else {
+        panic!("MT32_RS_ROMS_ALL is not set");
+    };
+    let mut checked = 0;
+    for entry in std::fs::read_dir(dir)
+        .expect("the directory opens")
+        .flatten()
+    {
+        let Ok(data) = std::fs::read(entry.path()) else {
+            continue;
+        };
+        let Some(info) = mt32_rs::rom::identify(&data) else {
+            continue;
+        };
+        let Some(layout) = mt32_rs::layout::layout_for(info) else {
+            continue;
+        };
+        let line = |offset: u16| {
+            let at = usize::from(offset);
+            let text = &data[at..at + 20];
+            assert!(
+                text.iter().all(|&b| (0x20..0x7F).contains(&b)),
+                "{}: not a display line at 0x{offset:04X}: {text:?}",
+                info.short_name
+            );
+            String::from_utf8_lossy(text).into_owned()
+        };
+        let startup = line(layout.startup_message);
+        let error = line(layout.sysex_error_message);
+        // The biggest store this control ROM's family can address; its
+        // own directory must fit inside it.
+        let samples = if layout.pcm_count == 256 {
+            0x80000
+        } else {
+            0x40000
+        };
+        let waves = mt32_rs::pcm::waves(&data, layout, samples).expect(info.short_name);
+        assert_eq!(waves.len(), usize::from(layout.pcm_count));
+        println!(
+            "  {:<18} startup {startup:?}  error {error:?}  {} waves",
+            info.short_name,
+            waves.len()
+        );
+        checked += 1;
+    }
+    assert!(checked > 0, "no control ROMs to check");
+}
