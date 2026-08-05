@@ -7,7 +7,7 @@ goes in as bytes, stereo samples come out. No file abstraction, no C API
 layer, no host plumbing, no `unsafe`.
 
 Written for the [Copperline](https://github.com/CopperlineHQ/Copperline)
-Amiga emulator, which vendors this crate and hears its MT-32 through it;
+Amiga emulator, which vendors this crate and emulates its MT-32 through it;
 this repository is the upstream. It stands alone all the same: nothing in
 it knows what an Amiga is. A sibling of
 [FluxBridge](https://github.com/CopperlineHQ/FluxBridge), the same
@@ -15,14 +15,14 @@ treatment given to FloppyDriveBridge.
 
 ## Status
 
-Complete and in use. The whole sound path -- LA32, envelopes, voice
-allocation, the Boss reverb, and all four of the analogue output models --
-renders bit-identically to Munt, proven by the differential harness below
-across every control ROM the module family shipped: both MT-32
-generations, the CM-32L/LAPC-I, and the CM-32LN. The MIDI stream parser,
-the ROM demonstration songs, and the dump replies on the module's MIDI
-OUT are in. A minute of module time renders in about half a second on
-one core, slightly ahead of the reference engine.
+The whole sound path -- LA32, envelopes, voice allocation, the Boss reverb, 
+and all four of the analogue output models -- renders bit-identically to Munt, 
+proven by the differential harness below across every control ROM the module 
+family shipped: both MT-32 generations, the CM-32L/LAPC-I, and the CM-32LN. 
+
+The MIDI stream parser, the ROM demonstration songs, and the dump replies on 
+the module's MIDI OUT are in. A minute of module time renders in about half a 
+second on one core, slightly ahead of the reference engine.
 
 ## Use
 
@@ -96,6 +96,15 @@ are `#[ignore]`d and look for a local pair under `MT32_RS_ROMS`
 MT32_RS_ROMS=~/roms cargo test --features oracle -- --ignored
 ```
 
+## Related work
+
+[Moont](https://gitlab.gnome.org/geoffhill/moont) is an independent Rust
+port of Munt's CM-32L emulation, LGPL-2.1-or-later like this crate, which
+validates its output against Munt sample for sample -- proof the bar this
+project sets is reachable. It emulates the CM-32L only; this crate exists
+for the whole MT-32 family, elder quirks included. Where its solutions
+inform this code, credit goes in `AUTHORS.txt`.
+
 ## Licence and provenance
 
 LGPL-2.1-or-later, as a derivative work of `mt32emu`:
@@ -107,19 +116,3 @@ LGPL-2.1-or-later, as a derivative work of `mt32emu`:
   and the contributors credited in `AUTHORS.txt`, whose work this is a
   translation of; Rust port copyright its own contributors.
 - Licence texts: `LGPL21.txt`, and `GPL2.txt` which it refers to.
-
-## Related work
-
-[Moont](https://gitlab.gnome.org/geoffhill/moont) is an independent Rust
-port of Munt's CM-32L emulation, LGPL-2.1-or-later like this crate, which
-validates its output against Munt sample for sample -- proof the bar this
-project sets is reachable. It emulates the CM-32L only; this crate exists
-for the whole MT-32 family, elder quirks included. Where its solutions
-inform this code, credit goes in `AUTHORS.txt`.
-
-## House style
-
-[Copperline](https://github.com/CopperlineHQ/Copperline) is the north
-star: its comment voice, test naming, module shape and gates apply here
-unchanged -- `cargo fmt --check`, `cargo clippy --all-targets
---all-features -- -D warnings`, and tests that read as sentences.
