@@ -1657,3 +1657,68 @@ fn a_note_matches_through_every_analogue_model() {
         println!("  {mode_name:<12} {at} frames identical at {rate} Hz");
     }
 }
+
+/// How fast the engines run: a crowded scene rendered for a minute of
+/// module time, wall-clock measured, ours beside the reference. Not a
+/// pass/fail check -- a figure to keep an eye on.
+#[test]
+#[ignore = "benchmark; needs a ROM pair in MT32_RS_ROMS"]
+fn bench_the_engines() {
+    let Some((control, pcm)) = rom_pair() else {
+        panic!("MT32_RS_ROMS is not set or the pair is unreadable");
+    };
+    let busy = |play: &mut dyn FnMut(u32)| {
+        for note in [0x30u32, 0x34, 0x37, 0x3C, 0x40, 0x43] {
+            play(0x0064_0091 | (note << 8));
+            play(0x0064_0092 | ((note + 5) << 8));
+            play(0x0064_0093 | ((note + 10) << 8));
+        }
+        play(0x007F_2499);
+        play(0x0064_2699);
+    };
+    for (label, mode, oracle_mode) in [
+        ("digital", mt32_rs::analog::AnalogMode::DigitalOnly, 0),
+        ("accurate", mt32_rs::analog::AnalogMode::Accurate, 2),
+    ] {
+        let mut ours =
+            mt32_rs::engine::Engine::open_with_analog(&control, &pcm, mode).expect("opens");
+        busy(&mut |m| ours.play_msg(m));
+        let rate = ours.output_sample_rate() as usize;
+        let mut block = vec![(0i16, 0i16); 4096];
+        let started = std::time::Instant::now();
+        let mut left = rate * 60;
+        while left > 0 {
+            let n = left.min(4096);
+            ours.render(&mut block[..n]);
+            left -= n;
+        }
+        let ours_took = started.elapsed();
+
+        let handle = unsafe {
+            mt32_oracle_open(
+                control.as_ptr(),
+                control.len(),
+                pcm.as_ptr(),
+                pcm.len(),
+                oracle_mode,
+            )
+        };
+        let mut oracle = Oracle(handle);
+        busy(&mut |m| oracle.play_msg(m));
+        let started = std::time::Instant::now();
+        let mut left = rate * 60;
+        while left > 0 {
+            let n = left.min(4096);
+            oracle.render(n);
+            left -= n;
+        }
+        let theirs_took = started.elapsed();
+        println!(
+            "  {label:<9} 60s of module time: ours {:>7.1?} ({:.0}x realtime), reference {:>7.1?} ({:.0}x)",
+            ours_took,
+            60.0 / ours_took.as_secs_f64(),
+            theirs_took,
+            60.0 / theirs_took.as_secs_f64(),
+        );
+    }
+}

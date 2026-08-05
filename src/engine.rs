@@ -1194,21 +1194,23 @@ impl Engine {
                 break;
             }
             let master_source = self.partials[master].param_source().unwrap();
-            let master_param = self.memory.partial_param(master_source).to_vec();
-            let param = PartialParam(&master_param);
-            let amp = self.partials[master].next_amp(&self.tables, param, &live, &self.quirks);
-            let pitch = self.partials[master].next_pitch(
-                &self.tables,
-                param,
-                &self.waves,
-                &live,
-                &self.quirks,
-                &mut self.jitter,
-            );
-            let cutoff = self.partials[master].next_cutoff(&self.tables, param);
-            self.partials[master].la32.generate_next_sample(
-                &self.tables,
-                &self.pcm,
+            let Self {
+                memory,
+                partials,
+                tables,
+                waves,
+                quirks,
+                jitter,
+                pcm,
+                ..
+            } = self;
+            let param = PartialParam(memory.partial_param(master_source));
+            let amp = partials[master].next_amp(tables, param, &live, quirks);
+            let pitch = partials[master].next_pitch(tables, param, waves, &live, quirks, jitter);
+            let cutoff = partials[master].next_cutoff(tables, param);
+            partials[master].la32.generate_next_sample(
+                tables,
+                pcm,
                 Pair::Master,
                 amp,
                 pitch,
@@ -1220,27 +1222,23 @@ impl Engine {
                     let slave_drum = self.partials[slave_id].rhythm_key();
                     let slave_live = self.live_values(slave_part, slave_drum);
                     let slave_source = self.partials[slave_id].param_source().unwrap();
-                    let slave_param = self.memory.partial_param(slave_source).to_vec();
-                    let sparam = PartialParam(&slave_param);
-                    let (m, s) = two(&mut self.partials, master, slave_id);
-                    let s_amp = s.next_amp(&self.tables, sparam, &slave_live, &self.quirks);
-                    let s_pitch = s.next_pitch(
-                        &self.tables,
-                        sparam,
-                        &self.waves,
-                        &slave_live,
-                        &self.quirks,
-                        &mut self.jitter,
-                    );
-                    let s_cutoff = s.next_cutoff(&self.tables, sparam);
-                    m.la32.generate_next_sample(
-                        &self.tables,
-                        &self.pcm,
-                        Pair::Slave,
-                        s_amp,
-                        s_pitch,
-                        s_cutoff,
-                    );
+                    let Self {
+                        memory,
+                        partials,
+                        tables,
+                        waves,
+                        quirks,
+                        jitter,
+                        pcm,
+                        ..
+                    } = self;
+                    let sparam = PartialParam(memory.partial_param(slave_source));
+                    let (m, s) = two(partials, master, slave_id);
+                    let s_amp = s.next_amp(tables, sparam, &slave_live, quirks);
+                    let s_pitch = s.next_pitch(tables, sparam, waves, &slave_live, quirks, jitter);
+                    let s_cutoff = s.next_cutoff(tables, sparam);
+                    m.la32
+                        .generate_next_sample(tables, pcm, Pair::Slave, s_amp, s_pitch, s_cutoff);
                     if !s.tva_playing() || !m.la32.is_active(Pair::Slave) {
                         m.la32.deactivate(Pair::Slave);
                         slave_died = true;
