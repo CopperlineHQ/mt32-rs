@@ -1,0 +1,3 @@
+# The reference C++ engine is vendored for the differential harness, not
+# part of the library; keep it out of the language statistics.
+oracle/munt/** linguist-vendored
