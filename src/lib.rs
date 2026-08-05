@@ -43,5 +43,8 @@ pub mod tvp;
 /// leaves the engine before any host resampling.
 pub const SAMPLE_RATE: u32 = 32_000;
 
+/// The crate's own version, for a host's About panel and log lines.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// The width of the module's LCD in characters.
 pub const LCD_WIDTH: usize = 20;

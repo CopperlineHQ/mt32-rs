@@ -258,7 +258,14 @@ pub struct Player {
 impl Player {
     /// Start `song` at the top, timed in the module's own frames.
     pub fn new(song: Song) -> Player {
-        let frames_per_tick = crate::SAMPLE_RATE as f32 * song.seconds_per_tick;
+        Player::at_rate(song, crate::SAMPLE_RATE)
+    }
+
+    /// Start `song` at the top, counting frames at `sample_rate`: for a
+    /// host that paces the song against a resampled stream rather than
+    /// the module's own.
+    pub fn at_rate(song: Song, sample_rate: u32) -> Player {
+        let frames_per_tick = sample_rate as f32 * song.seconds_per_tick;
         Player {
             song,
             next: 0,
