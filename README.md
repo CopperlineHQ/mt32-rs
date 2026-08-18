@@ -13,6 +13,9 @@ it knows what an Amiga is. A sibling of
 [FluxBridge](https://github.com/CopperlineHQ/FluxBridge), the same
 treatment given to FloppyDriveBridge.
 
+<img width="1287" height="110" alt="MT-32" src="https://github.com/user-attachments/assets/7f985b5d-3277-4e0d-91c1-e3f9c5de38a7" />
+
+
 ## Status
 
 The whole sound path -- LA32, envelopes, voice allocation, the Boss reverb, 
